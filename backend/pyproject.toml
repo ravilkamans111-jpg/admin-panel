@@ -1,0 +1,67 @@
+[project]
+name = "brand-admin-panel"
+version = "0.1.0"
+description = "Unified multi-tenant read-only admin panel for AmPay / RajaPay / quiet-forest"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "sqlalchemy[asyncio]>=2.0.35",
+    "asyncpg>=0.29.0",
+    "alembic>=1.13.2",
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.5.0",
+    "pyjwt>=2.9.0",
+    "argon2-cffi>=23.1.0",
+    "hvac>=2.3.0",
+    "python-dotenv>=1.0.1",
+    "structlog>=24.4.0",
+    "celery>=5.3.6",
+    "redis>=5.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "ruff>=0.6.0",
+    "import-linter>=2.1",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+ignore = [
+    "B008",  # function-call-in-default-argument — required by FastAPI's Depends() pattern
+]
+
+[tool.importlinter]
+root_package = "app"
+
+[[tool.importlinter.contracts]]
+name = "Слоистая архитектура: ручки -> сервисы -> репозитории -> реестр -> db/models -> core"
+type = "layers"
+layers = [
+    "app.api",
+    "app.services",
+    "app.repositories",
+    "app.registry",
+    "app.db",
+    "app.models",
+    "app.core",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
