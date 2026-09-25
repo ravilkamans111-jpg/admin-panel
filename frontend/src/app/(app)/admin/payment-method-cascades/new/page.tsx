@@ -53,10 +53,6 @@ export default function CreateCascadePage() {
         <h1 className="mt-1 text-lg font-semibold">Новый каскад</h1>
       </div>
 
-      <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-        Платёжный метод нельзя изменить после создания каскада — как в оригинальной Django-админке.
-      </div>
-
       {saveError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {saveError}

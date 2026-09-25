@@ -14,19 +14,24 @@ class DjangoAuthUser(TenantBase):
 
     None of the three monoliths customize `AUTH_USER_MODEL` (confirmed in
     all three migration reports) — `Merchant.user` is a plain FK to this
-    table. Only the columns needed to display "which login owns this
-    merchant" are mapped; password hashes are intentionally NOT selected by
-    any query this service issues (see admin_engine list_display configs).
+    table, and this is also what shows up as "Users" in the source Django
+    admin (registered automatically by `django.contrib.auth`, not by any
+    app's own `admin.py`). `password` (the hash) is deliberately NOT mapped
+    here — this model is read-only (see registry key "users") and there is
+    no reason for this service to ever read or display a password hash.
     """
 
     __tablename__ = "auth_user"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     username: Mapped[str] = mapped_column(String(150))
+    first_name: Mapped[str] = mapped_column(String(150), default="")
+    last_name: Mapped[str] = mapped_column(String(150), default="")
     email: Mapped[str] = mapped_column(String(254))
     is_active: Mapped[bool] = mapped_column(Boolean)
     is_staff: Mapped[bool] = mapped_column(Boolean)
     is_superuser: Mapped[bool] = mapped_column(Boolean)
+    last_login: Mapped[str | None] = mapped_column(nullable=True)
     date_joined: Mapped[str] = mapped_column(String(64))
 
 

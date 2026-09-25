@@ -404,3 +404,37 @@ export function clearCacheByMerchant(
 export function clearAllPaymentMethodsCache(): Promise<{ status: string }> {
   return authedFetch<{ status: string }>("/admin/payment-methods-cache/clear-all", { method: "POST" });
 }
+
+// ---------------------------------------------------------------------------
+// Generic create/update/delete — `app.services.generic_write_service`.
+// For "plain" models (no dedicated write endpoint, e.g. no real business
+// logic on save) — config-driven off `creatable_fields`/`editable_fields`/
+// `creatable`/`deletable` from `/admin/schema`. Models with their own
+// dedicated endpoint (transactions, settlements, ...) never reach this —
+// the backend's dedicated routers are matched first regardless.
+// ---------------------------------------------------------------------------
+
+export function createRecord(
+  modelKey: string,
+  values: Record<string, string | null>
+): Promise<Record<string, unknown>> {
+  return authedFetch<Record<string, unknown>>(`/admin/${modelKey}`, {
+    method: "POST",
+    body: values,
+  });
+}
+
+export function updateRecordGeneric(
+  modelKey: string,
+  id: string | number,
+  values: Record<string, string | null>
+): Promise<Record<string, unknown>> {
+  return authedFetch<Record<string, unknown>>(`/admin/${modelKey}/${id}`, {
+    method: "PATCH",
+    body: values,
+  });
+}
+
+export function deleteRecord(modelKey: string, id: string | number): Promise<void> {
+  return authedFetch<void>(`/admin/${modelKey}/${id}`, { method: "DELETE" });
+}

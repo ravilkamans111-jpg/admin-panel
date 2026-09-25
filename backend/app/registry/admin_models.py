@@ -44,6 +44,7 @@ from app.models.tenant import (
     ConversionStatisticsNew,
     ConversionStatisticsPartnersNew,
     Currency,
+    DjangoAuthUser,
     FloatedProcentsCompanies,
     InviteToken,
     Merchant,
@@ -254,6 +255,10 @@ register(
             "показ их здесь несёт реальный риск утечки; перед более широким "
             "раскатыванием стоит ужесточить RBAC на это поле."
         ),
+        editable_fields=["name", "public_key", "private_key", "transaction_id", "project_url"],
+        creatable_fields=["name", "public_key", "private_key", "transaction_id", "project_url", "user_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -271,8 +276,31 @@ register(
             "«Обновить балансы» (только суперадминистратор) пересчитывает balance/"
             "blocked_balance_in/out из леджера транзакций сырым SQL — см. "
             "app.services.merchant_balance_service. Это UPDATE, не upsert: пары "
-            "мерчант/валюта без существующей строки баланса не создаются."
+            "мерчант/валюта без существующей строки баланса не создаются. Поля ниже "
+            "также редактируются напрямую (как в оригинале) — правьте с осторожностью."
         ),
+        editable_fields=[
+            "balance",
+            "blocked_balance_in",
+            "blocked_balance_out",
+            "settlement_commission",
+            "balance_usdt",
+            "insurance_balance_usdt",
+            "currency_id",
+            "merchant_id",
+        ],
+        creatable_fields=[
+            "balance",
+            "blocked_balance_in",
+            "blocked_balance_out",
+            "settlement_commission",
+            "balance_usdt",
+            "insurance_balance_usdt",
+            "currency_id",
+            "merchant_id",
+        ],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -286,6 +314,10 @@ register(
         list_display=_all_fields(WhiteList),
         list_filter=["merchant_id"],
         search_fields=["allowed_ip"],
+        editable_fields=["allowed_ip", "merchant_id"],
+        creatable_fields=["allowed_ip", "merchant_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -299,6 +331,12 @@ register(
         list_display=_all_fields(InviteToken),
         list_filter=["used"],
         search_fields=["client_name"],
+        # `invited_user` не входит в `fields` у InviteTokenAdmin в источнике —
+        # редактируется только через реальный flow приглашения, не вручную.
+        editable_fields=["client_name", "token", "used"],
+        creatable_fields=["client_name", "token", "used"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -311,6 +349,57 @@ register(
         verbose_name_plural="USDT-настройки пользователей",
         list_display=_all_fields(UserConfig),
         list_filter=["enable_usdt_exchanger", "exchanger_source"],
+        editable_fields=[
+            "user_id",
+            "enable_usdt_exchanger",
+            "exchanger_source",
+            "pinned_exchange",
+            "binance_stack_page",
+            "binance_stack_rows",
+            "binance_stack_row_from",
+            "binance_stack_row_to",
+            "bybit_stack_page",
+            "bybit_stack_size",
+            "bybit_stack_row_from",
+            "bybit_stack_row_to",
+            "manual_usdt_rates",
+        ],
+        creatable_fields=[
+            "user_id",
+            "enable_usdt_exchanger",
+            "exchanger_source",
+            "pinned_exchange",
+            "binance_stack_page",
+            "binance_stack_rows",
+            "binance_stack_row_from",
+            "binance_stack_row_to",
+            "bybit_stack_page",
+            "bybit_stack_size",
+            "bybit_stack_row_from",
+            "bybit_stack_row_to",
+            "manual_usdt_rates",
+        ],
+        creatable=True,
+        deletable=True,
+    )
+)
+
+register(
+    AdminModelConfig(
+        key="users",
+        app="personal_account_auth",
+        model=DjangoAuthUser,
+        verbose_name="Пользователь",
+        verbose_name_plural="Пользователи",
+        list_display=_all_fields(DjangoAuthUser),
+        list_filter=["is_active", "is_staff", "is_superuser"],
+        search_fields=["username", "email", "first_name", "last_name"],
+        notes=(
+            "Это тот же auth_user, что и в исходной Django-админке ('Users' — "
+            "регистрируется автоматически django.contrib.auth, не в app-коде). "
+            "Пароль (хеш) намеренно нигде не хранится и не показывается этим "
+            "сервисом — создание/сброс пароля здесь не поддерживается."
+        ),
     )
 )
 
@@ -327,6 +416,16 @@ register(
         verbose_name_plural="Компании-партнёры",
         list_display=_all_fields(Company),
         search_fields=["name"],
+        notes=(
+            "В исходном коде над @admin.register(Company) висит комментарий "
+            "«специально убрал регистрацию этой модели» — но декоратор всё равно "
+            "активен (комментарий на код не влияет), модель реально редактируется "
+            "в оригинальной админке. Сохранено как есть."
+        ),
+        editable_fields=["name"],
+        creatable_fields=["name"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -340,6 +439,10 @@ register(
         list_display=_all_fields(PaymentMethod),
         list_filter=["direction", "currency_id"],
         search_fields=["name", "sub_method", "token"],
+        editable_fields=["name", "sub_method", "direction", "token", "currency_id"],
+        creatable_fields=["name", "sub_method", "direction", "token", "currency_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -409,6 +512,33 @@ register(
         verbose_name_plural="Балансы компаний",
         list_display=_all_fields(CompanyBalance),
         list_filter=["company_id", "currency_id"],
+        notes="Поля редактируются напрямую, как в оригинальной админке — правьте с осторожностью.",
+        editable_fields=[
+            "available_balance",
+            "blocked_balance_in",
+            "blocked_balance_out",
+            "our_income",
+            "clients_funds",
+            "settlement_commission",
+            "alert_balance_percent",
+            "insurance_balance",
+            "company_id",
+            "currency_id",
+        ],
+        creatable_fields=[
+            "available_balance",
+            "blocked_balance_in",
+            "blocked_balance_out",
+            "our_income",
+            "clients_funds",
+            "settlement_commission",
+            "alert_balance_percent",
+            "insurance_balance",
+            "company_id",
+            "currency_id",
+        ],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -434,6 +564,10 @@ register(
         verbose_name_plural="Плавающие комиссии",
         list_display=_all_fields(FloatedProcentsCompanies),
         list_filter=["payment_method_company_id"],
+        editable_fields=["from_amount", "to_amount", "rate", "payment_method_company_id"],
+        creatable_fields=["from_amount", "to_amount", "rate", "payment_method_company_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -446,6 +580,30 @@ register(
         verbose_name_plural="Шаблоны платёжных методов",
         list_display=_all_fields(PaymentMethodTemplate),
         search_fields=["name", "description"],
+        editable_fields=[
+            "name",
+            "description",
+            "currency_id",
+            "direction",
+            "transaction_min_limit",
+            "transaction_max_limit",
+            "test_mode",
+            "only_admin_configure",
+            "default_personal_rate",
+        ],
+        creatable_fields=[
+            "name",
+            "description",
+            "currency_id",
+            "direction",
+            "transaction_min_limit",
+            "transaction_max_limit",
+            "test_mode",
+            "only_admin_configure",
+            "default_personal_rate",
+        ],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -458,6 +616,10 @@ register(
         verbose_name_plural="Привязки методов к шаблонам",
         list_display=_all_fields(TemplateMethodMapping),
         list_filter=["template_id"],
+        editable_fields=["payment_method_id", "template_id"],
+        creatable_fields=["payment_method_id", "template_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -516,6 +678,10 @@ register(
         verbose_name_plural="Валюты",
         list_display=_all_fields(Currency),
         search_fields=["iso_code", "addition_name"],
+        editable_fields=["iso_code", "addition_name", "limit", "binance_bank_id"],
+        creatable_fields=["iso_code", "addition_name", "limit", "binance_bank_id"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -528,6 +694,10 @@ register(
         verbose_name_plural="Банки",
         list_display=_all_fields(Bank),
         search_fields=["name"],
+        editable_fields=["name"],
+        creatable_fields=["name"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -541,6 +711,36 @@ register(
         list_display=_all_fields(Card),
         list_filter=["is_enabled", "bank_id", "currency_id"],
         search_fields=["name", "owner_name", "requisite"],
+        editable_fields=[
+            "name",
+            "owner_name",
+            "requisite",
+            "transaction_count_limit",
+            "transaction_amount_limit",
+            "current_transaction_count",
+            "current_transaction_amount",
+            "transaction_amount_lower_limit",
+            "transaction_amount_upper_limit",
+            "is_enabled",
+            "bank_id",
+            "currency_id",
+        ],
+        creatable_fields=[
+            "name",
+            "owner_name",
+            "requisite",
+            "transaction_count_limit",
+            "transaction_amount_limit",
+            "current_transaction_count",
+            "current_transaction_amount",
+            "transaction_amount_lower_limit",
+            "transaction_amount_upper_limit",
+            "is_enabled",
+            "bank_id",
+            "currency_id",
+        ],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -554,6 +754,13 @@ register(
         list_display=_all_fields(SellingInfo),
         list_filter=["currency_for_sale_id", "currency_for_buy"],
         default_ordering=["-date_update"],
+        # date_update — Django `auto_now=True` в источнике, не входит в форму
+        # редактирования; здесь тоже не в editable_fields и трогается
+        # автоматически (см. app.services.generic_write_service).
+        editable_fields=["currency_for_sale_id", "currency_for_buy", "coefficient", "date_create"],
+        creatable_fields=["currency_for_sale_id", "currency_for_buy", "coefficient", "date_create"],
+        creatable=True,
+        deletable=True,
     )
 )
 
@@ -614,6 +821,16 @@ register(
         list_display=_all_fields(TestCredits),
         list_filter=["is_active", "wanted_status_callback", "payment_method_id"],
         search_fields=["requisite"],
+        editable_fields=["payment_method_id", "requisite", "wanted_status_callback", "is_active", "requisite_details"],
+        creatable_fields=[
+            "payment_method_id",
+            "requisite",
+            "wanted_status_callback",
+            "is_active",
+            "requisite_details",
+        ],
+        creatable=True,
+        deletable=True,
     )
 )
 

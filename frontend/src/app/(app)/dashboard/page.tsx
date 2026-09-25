@@ -118,7 +118,7 @@ export default function DashboardPage() {
             <table className="data-table w-full text-sm">
               <thead>
                 <tr className="text-left">
-                  <th className="pb-2 pr-4 font-medium">ID валюты</th>
+                  <th className="pb-2 pr-4 font-medium">Валюта</th>
                   <th className="pb-2 pr-4 font-medium">Общий баланс</th>
                   <th className="pb-2 pr-4 font-medium">Заблокировано (вход)</th>
                   <th className="pb-2 pr-4 font-medium">Заблокировано (выход)</th>
@@ -127,7 +127,7 @@ export default function DashboardPage() {
               <tbody>
                 {summary.balances_by_currency.map((row) => (
                   <tr key={row.currency_id}>
-                    <td className="py-1.5 pr-4">{row.currency_id}</td>
+                    <td className="py-1.5 pr-4">{row.currency_code}</td>
                     <td className="py-1.5 pr-4 font-mono">{row.total_balance}</td>
                     <td className="py-1.5 pr-4 font-mono">{row.total_blocked_in}</td>
                     <td className="py-1.5 pr-4 font-mono">{row.total_blocked_out}</td>

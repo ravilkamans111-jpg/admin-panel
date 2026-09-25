@@ -13,6 +13,8 @@ import {
   updateSettlement,
   updatePaymentMethodCompany,
   updateMerchantPaymentMethod,
+  updateRecordGeneric,
+  deleteRecord,
   type CommissionContext,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
@@ -21,22 +23,11 @@ import { StatusBadge } from "@/components/StatusBadge";
 
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
 
-// Only these two have a real write endpoint today — each its own dedicated
-// backend router (`app.api.transaction_writes` / `app.api.settlement_writes`),
-// not the generic admin engine, since both run real balance-mutation side
-// effects on save. `config.is_writable` also gates this, but the actual
-// PATCH call is model-specific, so it stays keyed here explicitly rather
-// than being fully generic.
-const WRITABLE_KEYS_WITH_DEDICATED_ENDPOINT = new Set([
-  "transactions",
-  "settlements",
-  "payment-method-companies",
-  "merchant-payment-methods",
-]);
-
-// Dispatch table for the model-specific PATCH call — each of these runs
-// real side effects on save (balance math, Redis cache invalidation), so
-// there's no single generic "update" call to fall back to.
+// These have a real dedicated write endpoint (own backend router) because
+// saving them runs real business logic beyond a plain column update —
+// balance math, Redis cache invalidation. Any other `config.is_writable`
+// model falls back to the generic engine (`app.api.generic_writes`),
+// which is safe for it precisely because it ISN'T in this map.
 const UPDATE_FN: Record<string, (id: string | number, values: Record<string, string | null>) => Promise<Record<string, unknown>>> = {
   transactions: updateTransaction,
   "payment-method-companies": updatePaymentMethodCompany,
@@ -57,7 +48,8 @@ export default function AdminModelDetailPage() {
   const router = useRouter();
 
   const config = getConfig(modelKey);
-  const canEdit = Boolean(config?.is_writable) && WRITABLE_KEYS_WITH_DEDICATED_ENDPOINT.has(modelKey);
+  const canEdit = Boolean(config?.is_writable);
+  const canDelete = Boolean(config?.deletable);
 
   const [record, setRecord] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
@@ -70,6 +62,9 @@ export default function AdminModelDetailPage() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedNotice, setSavedNotice] = useState(false);
   const [commissionContext, setCommissionContext] = useState<CommissionContext | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   function load() {
     let cancelled = false;
@@ -110,7 +105,16 @@ export default function AdminModelDetailPage() {
     const initial: Record<string, string> = {};
     for (const field of config.editable_fields) {
       const value = record[field];
-      initial[field] = value === null || value === undefined ? "" : String(value);
+      if (value === null || value === undefined) {
+        initial[field] = "";
+      } else if (typeof value === "object") {
+        // JSON columns (e.g. TestCredits.requisite_details) come back as a
+        // parsed object — stringify to round-trippable JSON text, not
+        // `String(value)` (which would produce the useless "[object Object]").
+        initial[field] = JSON.stringify(value);
+      } else {
+        initial[field] = String(value);
+      }
     }
     setForm(initial);
     setSaveError(null);
@@ -182,10 +186,9 @@ export default function AdminModelDetailPage() {
       for (const field of config.editable_fields) {
         values[field] = form[field] === "" ? null : form[field];
       }
+      const updateFn = UPDATE_FN[modelKey] ?? ((recordId: string | number, v: Record<string, string | null>) => updateRecordGeneric(modelKey, recordId, v));
       const updated =
-        modelKey === "settlements"
-          ? (await updateSettlement(id, values)).settlement
-          : await UPDATE_FN[modelKey](id, values);
+        modelKey === "settlements" ? (await updateSettlement(id, values)).settlement : await updateFn(id, values);
       setRecord(updated);
       setEditing(false);
       setSavedNotice(true);
@@ -198,6 +201,25 @@ export default function AdminModelDetailPage() {
       setSaveError(err instanceof Error ? err.message : "Не удалось сохранить изменения.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      await deleteRecord(modelKey, id);
+      router.push(`/admin/${modelKey}`);
+    } catch (err) {
+      if (err instanceof AuthExpiredError) {
+        logout();
+        router.replace("/login");
+        return;
+      }
+      setDeleteError(err instanceof Error ? err.message : "Не удалось удалить запись.");
+      setConfirmingDelete(false);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -230,13 +252,43 @@ export default function AdminModelDetailPage() {
             {config.verbose_name} #{id}
           </h1>
         </div>
-        {canEdit && !editing && (
-          <button
-            onClick={startEditing}
-            className="shrink-0 rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-dark"
-          >
-            Редактировать
-          </button>
+        {!editing && (
+          <div className="flex shrink-0 gap-2">
+            {canEdit && (
+              <button
+                onClick={startEditing}
+                className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-dark"
+              >
+                Редактировать
+              </button>
+            )}
+            {canDelete && !confirmingDelete && (
+              <button
+                onClick={() => setConfirmingDelete(true)}
+                className="rounded-md border border-red-300 px-3 py-1.5 text-sm text-red-700 hover:bg-red-50 dark:border-red-900 dark:text-red-300 dark:hover:bg-red-950"
+              >
+                Удалить
+              </button>
+            )}
+            {canDelete && confirmingDelete && (
+              <>
+                <button
+                  onClick={handleDelete}
+                  disabled={deleting}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-60"
+                >
+                  {deleting ? "Удаление…" : "Точно удалить?"}
+                </button>
+                <button
+                  onClick={() => setConfirmingDelete(false)}
+                  disabled={deleting}
+                  className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-accent disabled:opacity-60"
+                >
+                  Отмена
+                </button>
+              </>
+            )}
+          </div>
         )}
       </div>
 
@@ -246,22 +298,15 @@ export default function AdminModelDetailPage() {
         </div>
       )}
 
-      {editing && (modelKey === "transactions" || modelKey === "settlements") && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          Изменение статуса/суммы запускает реальный пересчёт балансов мерчанта и партнёра — как в оригинальной
-          Django-админке. Действие необратимо без встречной корректирующей записи.
-        </div>
-      )}
-
-      {editing && (modelKey === "payment-method-companies" || modelKey === "merchant-payment-methods") && (
-        <div className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          Сохранение сбрасывает Redis-кэш доступных методов оплаты — как в оригинальной Django-админке.
-        </div>
-      )}
-
       {saveError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {saveError}
+        </div>
+      )}
+
+      {deleteError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          {deleteError}
         </div>
       )}
 

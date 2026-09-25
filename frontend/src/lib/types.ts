@@ -54,6 +54,7 @@ export interface DashboardSummary {
   transactions_by_status: Record<string, number>;
   balances_by_currency: Array<{
     currency_id: number;
+    currency_code: string;
     total_balance: string;
     total_blocked_in: string;
     total_blocked_out: string;

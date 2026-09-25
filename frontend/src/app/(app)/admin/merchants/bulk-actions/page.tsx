@@ -176,11 +176,6 @@ export default function MerchantBulkActionsPage() {
           ← Мерчанты
         </Link>
         <h1 className="mt-1 text-lg font-semibold">Массовые действия с мерчантами</h1>
-        <p className="mt-1 text-xs text-[var(--text-muted)]">
-          Существующие пары мерчант/метод пропускаются без ошибки и без изменения ставки — как в оригинальной
-          Django-админке. Созданные таким образом методы НЕ сбрасывают Redis-кэш немедленно (баг оригинала,
-          сохранён как есть).
-        </p>
       </div>
 
       <div className="card space-y-3 p-4">

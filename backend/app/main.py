@@ -11,6 +11,7 @@ from app.api.auth import router as auth_router
 from app.api.cache_clear_actions import router as cache_clear_actions_router
 from app.api.cascade_writes import router as cascade_writes_router
 from app.api.dashboard import router as dashboard_router
+from app.api.generic_writes import router as generic_writes_router
 from app.api.merchant_balance_writes import router as merchant_balance_writes_router
 from app.api.merchant_bulk_actions import router as merchant_bulk_actions_router
 from app.api.payment_method_writes import router as payment_method_writes_router
@@ -50,6 +51,7 @@ app.include_router(cache_clear_actions_router)
 app.include_router(cascade_writes_router)
 app.include_router(merchant_bulk_actions_router)
 app.include_router(merchant_balance_writes_router)
+app.include_router(generic_writes_router)
 app.include_router(admin_router)
 app.include_router(dashboard_router)
 

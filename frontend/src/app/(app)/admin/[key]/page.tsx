@@ -13,10 +13,6 @@ import { humanizeFieldName } from "@/lib/format";
 const PAGE_SIZE = 25;
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
 
-// Models with a dedicated create page/endpoint (not the generic admin
-// engine) — see `app.api.settlement_writes` / `app.api.cascade_writes`.
-const CREATABLE_KEYS_WITH_DEDICATED_ENDPOINT = new Set(["settlements", "payment-method-cascades"]);
-
 // Models with a dedicated multi-select bulk-actions page at
 // `/admin/{key}/bulk-actions` — see `app.services.merchant_bulk_actions_service`
 // / `app.services.cache_clear_actions_service`.
@@ -179,7 +175,7 @@ export default function AdminModelListPage() {
               {refreshing ? "Обновление…" : "Обновить балансы"}
             </button>
           )}
-          {config.creatable && CREATABLE_KEYS_WITH_DEDICATED_ENDPOINT.has(modelKey) && (
+          {config.creatable && (
             <Link
               href={`/admin/${modelKey}/new`}
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-dark"

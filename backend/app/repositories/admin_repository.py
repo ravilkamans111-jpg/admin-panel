@@ -9,11 +9,12 @@ bad field names — the service layer translates that into a domain exception
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import String, Text, func, or_, select
+from sqlalchemy import JSON, String, Text, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -49,6 +50,60 @@ def _cast_filter_value(column, raw: str) -> Any:
         except InvalidOperation:
             raise ValueError(f"Invalid decimal filter value: {raw}") from None
     return raw
+
+
+def cast_value(column, raw: Any) -> Any:
+    """Coerces a raw form-submitted value (almost always a `str`, sometimes
+    already a native type from a JSON body) to the column's Python type —
+    the write-path counterpart to `_cast_filter_value`. `None` / `""` maps
+    to `NULL` for nullable columns (source's Django admin does the same:
+    an empty optional form field saves as `NULL`, not `""`)."""
+    if raw is None or raw == "":
+        return None
+    if isinstance(column.type, JSON):
+        return json.loads(raw) if isinstance(raw, str) else raw
+    py_type = column.type.python_type if hasattr(column.type, "python_type") else str
+    if not isinstance(raw, str):
+        return raw
+    if py_type is bool:
+        return raw.lower() in ("1", "true", "yes", "on")
+    if py_type is int:
+        return int(raw)
+    if py_type is Decimal:
+        try:
+            return Decimal(raw)
+        except InvalidOperation:
+            raise ValueError(f"Invalid decimal value: {raw}") from None
+    return raw
+
+
+def build_instance(config: AdminModelConfig, values: dict[str, Any]) -> Any:
+    """Builds a new, unsaved ORM instance from `config.creatable_fields`.
+
+    Mirrors `apply_field_updates`'s field-allowlist discipline: any key not
+    in `creatable_fields` is rejected rather than silently dropped."""
+    unknown = [f for f in values if f not in config.creatable_fields]
+    if unknown:
+        raise ValueError(f"Not creatable on {config.key}: {unknown}")
+    kwargs: dict[str, Any] = {}
+    for field_name, raw in values.items():
+        column = _column(config.model, field_name)
+        kwargs[field_name] = cast_value(column, raw)
+    return config.model(**kwargs)
+
+
+def apply_casted_field_updates(config: AdminModelConfig, instance: Any, values: dict[str, Any]) -> None:
+    """Like `apply_field_updates`, but casts each raw value to the target
+    column's Python type first — for the generic write engine, whose
+    incoming values are always raw strings from a form, unlike the
+    money-mutating services' own dedicated request models (which use
+    Pydantic to cast before ever reaching the repository)."""
+    unknown = [f for f in values if f not in config.editable_fields]
+    if unknown:
+        raise ValueError(f"'{unknown[0]}' is not an editable field for {config.key}")
+    for field_name, raw in values.items():
+        column = _column(config.model, field_name)
+        setattr(instance, field_name, cast_value(column, raw))
 
 
 def _apply_filters(stmt: Select, config: AdminModelConfig, *, search: str | None, filters: dict[str, str]) -> Select:
