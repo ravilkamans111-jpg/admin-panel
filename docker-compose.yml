@@ -68,6 +68,15 @@ services:
     ports:
       - "8200:8200"
 
+  # Local stand-in for each brand's own Redis (method-lookup cache the
+  # write paths invalidate — see app.services.cache_invalidation). One
+  # container, one logical DB index per brand so invalidation on one brand
+  # never touches another's keys.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   backend:
     build: ./backend
     env_file: ./backend/.env
@@ -95,10 +104,17 @@ services:
       BRAND_QUIET_FOREST_DB_NAME: postgres
       BRAND_QUIET_FOREST_DB_USER: postgres
       BRAND_QUIET_FOREST_DB_PASSWORD: postgres
+      # One shared local Redis, one DB index per brand (see the `redis`
+      # service above) — real cache invalidation instead of the "no Redis
+      # configured" no-op fallback.
+      BRAND_AMPAY_REDIS_URL: redis://redis:6379/0
+      BRAND_RAJAPAY_REDIS_URL: redis://redis:6379/1
+      BRAND_QUIET_FOREST_REDIS_URL: redis://redis:6379/2
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       - control_plane_db
+      - redis
     ports:
       - "8000:8000"
 

@@ -238,7 +238,10 @@ export default function AdminModelDetailPage() {
   if (!record || !config) return null;
 
   const enhanced = ENHANCED_KEYS.has(modelKey);
-  const fields = Object.keys(record);
+  // `currency_code` is a server-added enrichment sibling of `currency_id`
+  // (see app.repositories.admin_repository), not a real model column —
+  // shown inline on the `currency_id` row itself, not as its own row.
+  const fields = Object.keys(record).filter((f) => f !== "currency_code");
   const editableSet = new Set(config.editable_fields);
 
   return (
@@ -358,7 +361,12 @@ export default function AdminModelDetailPage() {
           }
 
           let display: React.ReactNode;
-          if (enhanced && field === "status" && value !== null && value !== undefined) {
+          if (field === "currency_id" && record["currency_code"] != null) {
+            // See the analogous DataTable.tsx branch — the API enriches
+            // any record with a `currency_id` column with a sibling
+            // `currency_code` (app.repositories.admin_repository).
+            display = String(record["currency_code"]);
+          } else if (enhanced && field === "status" && value !== null && value !== undefined) {
             display = <StatusBadge value={value} />;
           } else if (field.startsWith("date_") || field.endsWith("_at") || field === "date") {
             display = formatDateMaybe(value);

@@ -183,11 +183,7 @@ register(
         list_filter=["status", "settl_type"],
         search_fields=["transaction_id", "wallet", "tracker_link", "tg_id"],
         default_ordering=["-date_create"],
-        notes=(
-            "Создание/правка сеттлмента создаёт или обновляет связанную "
-            "транзакцию как часть сохранения (SettlementSaveService) — "
-            "перенесено в app.services.settlement_write_service."
-        ),
+        notes="Создание/правка сеттлмента создаёт или обновляет связанную транзакцию как часть сохранения.",
         editable_fields=[
             "status", "amount", "commission", "our_funds", "clients_funds",
             "conversion_rate", "amount_in_usdt", "final_amount", "final_amount_in_usdt",
@@ -225,13 +221,7 @@ register(
         list_filter=["permanent_ban", "second_chance"],
         search_fields=["merchant_name", "user_id"],
         default_ordering=["-date_create"],
-        notes=(
-            "Правка запускает ту же diff-логику, что и в оригинале "
-            "(save(from_admin=True, old_value=...)) — перенесено в "
-            "app.services.antifraud_write_service. Особенность источника, "
-            "сохранённая как есть: merchant_name НЕ пересчитывается при "
-            "правке через админку, даже если изменить merchant."
-        ),
+        notes="merchant_name не пересчитывается при правке через админку, даже если изменить merchant.",
         editable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
     )
 )
@@ -273,11 +263,9 @@ register(
         list_filter=["merchant_id", "currency_id"],
         default_ordering=["-id"],
         notes=(
-            "«Обновить балансы» (только суперадминистратор) пересчитывает balance/"
-            "blocked_balance_in/out из леджера транзакций сырым SQL — см. "
-            "app.services.merchant_balance_service. Это UPDATE, не upsert: пары "
-            "мерчант/валюта без существующей строки баланса не создаются. Поля ниже "
-            "также редактируются напрямую (как в оригинале) — правьте с осторожностью."
+            "«Обновить балансы» пересчитывает balance/blocked_balance_in/out из "
+            "леджера транзакций. Пары мерчант/валюта без существующей строки баланса "
+            "не создаются. Поля ниже редактируются напрямую — правьте с осторожностью."
         ),
         editable_fields=[
             "balance",
@@ -394,12 +382,6 @@ register(
         list_display=_all_fields(DjangoAuthUser),
         list_filter=["is_active", "is_staff", "is_superuser"],
         search_fields=["username", "email", "first_name", "last_name"],
-        notes=(
-            "Это тот же auth_user, что и в исходной Django-админке ('Users' — "
-            "регистрируется автоматически django.contrib.auth, не в app-коде). "
-            "Пароль (хеш) намеренно нигде не хранится и не показывается этим "
-            "сервисом — создание/сброс пароля здесь не поддерживается."
-        ),
     )
 )
 
@@ -416,12 +398,6 @@ register(
         verbose_name_plural="Компании-партнёры",
         list_display=_all_fields(Company),
         search_fields=["name"],
-        notes=(
-            "В исходном коде над @admin.register(Company) висит комментарий "
-            "«специально убрал регистрацию этой модели» — но декоратор всё равно "
-            "активен (комментарий на код не влияет), модель реально редактируется "
-            "в оригинальной админке. Сохранено как есть."
-        ),
         editable_fields=["name"],
         creatable_fields=["name"],
         creatable=True,
@@ -456,11 +432,7 @@ register(
         list_display=_all_fields(PaymentMethodCompany),
         list_filter=["is_active", "company_id", "payment_method_id"],
         default_ordering=["priority"],
-        notes=(
-            "save() сверяет изменения полей is_active/лимитов/priority и инвалидирует Redis-кэш "
-            "методов оплаты (см. app.services.payment_method_write_service) — изменение "
-            "partner_rate в одиночку кэш НЕ сбрасывает, это сохранено как в оригинале."
-        ),
+        notes="Изменение только partner_rate не сбрасывает Redis-кэш методов оплаты — нужно менять is_active/лимиты/priority.",
         editable_fields=[
             "is_active",
             "priority",
@@ -484,11 +456,6 @@ register(
         verbose_name_plural="Платёжные методы мерчантов",
         list_display=_all_fields(MerchantPaymentMethod),
         list_filter=["test_mode", "block", "merchant_id", "payment_method_id"],
-        notes=(
-            "save() безусловно инвалидирует Redis-кэш методов оплаты для мерчанта на КАЖДОЕ "
-            "сохранение, независимо от того, какие поля изменились (см. "
-            "app.services.payment_method_write_service)."
-        ),
         editable_fields=[
             "personal_rate",
             "test_mode",
@@ -512,7 +479,7 @@ register(
         verbose_name_plural="Балансы компаний",
         list_display=_all_fields(CompanyBalance),
         list_filter=["company_id", "currency_id"],
-        notes="Поля редактируются напрямую, как в оригинальной админке — правьте с осторожностью.",
+        notes="Поля редактируются напрямую — правьте с осторожностью.",
         editable_fields=[
             "available_balance",
             "blocked_balance_in",
@@ -633,11 +600,7 @@ register(
         list_display=_all_fields(PaymentMethodCascade),
         list_filter=["is_active", "payment_method_id"],
         search_fields=["name", "description"],
-        notes=(
-            "Самая сложная бизнес-логика валидации во всей исходной кодовой базе — "
-            "см. app.services.cascade_write_service. payment_method неизменяем после "
-            "создания (как в оригинале: поле становится readonly при редактировании)."
-        ),
+        notes="Платёжный метод неизменяем после создания каскада.",
         editable_fields=["name", "description", "is_active"],
         creatable_fields=["name", "payment_method_id", "description", "is_active"],
         creatable=True,
@@ -654,10 +617,7 @@ register(
         list_display=_all_fields(PaymentMethodCascadeItem),
         list_filter=["cascade_id", "is_active"],
         default_ordering=["priority"],
-        notes=(
-            "payment_method_company.payment_method должен совпадать с payment_method "
-            "каскада; priority уникален в рамках каскада — см. app.services.cascade_write_service."
-        ),
+        notes="Метод компании должен совпадать с методом каскада; priority уникален в рамках каскада.",
         editable_fields=["payment_method_company_id", "priority", "is_active"],
         creatable_fields=["cascade_id", "payment_method_company_id", "priority", "is_active"],
         creatable=True,

@@ -18,6 +18,7 @@ from sqlalchemy import JSON, String, Text, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
+from app.models.tenant import Currency
 from app.registry.admin_models import AdminModelConfig
 
 DEFAULT_PAGE_SIZE = 25
@@ -158,14 +159,36 @@ async def run_list_query(
 
     rows = (await session.execute(list_stmt)).scalars().all()
     items = [row_to_dict(row) for row in rows]
+    await _enrich_currency_codes(session, items)
     return Page(items=items, total=total, page=page, page_size=page_size)
+
+
+async def _enrich_currency_codes(session: AsyncSession, rows: list[dict[str, Any]]) -> None:
+    """Best-effort: any row with a `currency_id` column (MerchantBalance,
+    CompanyBalance, PaymentMethod, Card, PaymentMethodTemplate, ...) gets a
+    sibling `currency_code` (the ISO code) added in place, so the frontend
+    can show a real currency instead of a bare numeric id — without
+    changing `list_display`/column order for any model's registry entry."""
+    ids = {row["currency_id"] for row in rows if row.get("currency_id") is not None}
+    if not ids:
+        return
+    result = await session.execute(select(Currency.id, Currency.iso_code).where(Currency.id.in_(ids)))
+    code_by_id = dict(result.all())
+    for row in rows:
+        currency_id = row.get("currency_id")
+        if currency_id is not None and currency_id in code_by_id:
+            row["currency_code"] = code_by_id[currency_id]
 
 
 async def get_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) -> dict[str, Any] | None:
     column = _column(config.model, config.pk_field)
     stmt = select(config.model).where(column == pk)
     instance = (await session.execute(stmt)).scalar_one_or_none()
-    return row_to_dict(instance) if instance is not None else None
+    if instance is None:
+        return None
+    row = row_to_dict(instance)
+    await _enrich_currency_codes(session, [row])
+    return row
 
 
 async def get_instance_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) -> Any | None:

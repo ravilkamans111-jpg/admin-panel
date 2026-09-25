@@ -47,7 +47,7 @@ export function DataTable({ modelKey, columns, rows, ordering, onSort, enhanced 
               <tr key={id !== undefined ? String(id) : idx} className="hover:bg-black/[0.02] dark:hover:bg-white/[0.03]">
                 {columns.map((col) => (
                   <td key={col} className="whitespace-nowrap px-3 py-2">
-                    <Cell modelKey={modelKey} field={col} value={row[col]} rowId={id} enhanced={enhanced} />
+                    <Cell modelKey={modelKey} field={col} value={row[col]} row={row} rowId={id} enhanced={enhanced} />
                   </td>
                 ))}
               </tr>
@@ -70,18 +70,25 @@ function Cell({
   modelKey,
   field,
   value,
+  row,
   rowId,
   enhanced,
 }: {
   modelKey: string;
   field: string;
   value: unknown;
+  row: Record<string, unknown>;
   rowId: unknown;
   enhanced?: boolean;
 }) {
   let content: React.ReactNode;
 
-  if (enhanced && field === "status" && value !== null && value !== undefined) {
+  if (field === "currency_id" && row["currency_code"] != null) {
+    // Server enriches any row with a `currency_id` column with a sibling
+    // `currency_code` (see app.repositories.admin_repository) — show the
+    // real ISO code instead of the bare numeric id.
+    content = String(row["currency_code"]);
+  } else if (enhanced && field === "status" && value !== null && value !== undefined) {
     content = <StatusBadge value={value} />;
   } else if (enhanced && looksLikeMoneyField(field) && typeof value === "string" && !Number.isNaN(Number(value))) {
     content = <span className="font-mono tabular-nums">{value}</span>;
