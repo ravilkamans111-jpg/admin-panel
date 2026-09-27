@@ -110,6 +110,16 @@ services:
       BRAND_AMPAY_REDIS_URL: redis://redis:6379/0
       BRAND_RAJAPAY_REDIS_URL: redis://redis:6379/1
       BRAND_QUIET_FOREST_REDIS_URL: redis://redis:6379/2
+      # Same local Redis, used as a Celery BROKER (separate db indices from
+      # the cache ones above) so `app.db.tenant_celery.send_task` has
+      # somewhere real to enqueue onto locally — in production this points
+      # at the actual monolith's Celery broker so ITS workers pick the task
+      # up (see app.services.callback_service). No local worker consumes
+      # these queues here; that's expected — nothing in this dev compose
+      # stack runs the Django monolith's Celery worker.
+      BRAND_AMPAY_CELERY_BROKER_URL: redis://redis:6379/4
+      BRAND_RAJAPAY_CELERY_BROKER_URL: redis://redis:6379/5
+      BRAND_QUIET_FOREST_CELERY_BROKER_URL: redis://redis:6379/6
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

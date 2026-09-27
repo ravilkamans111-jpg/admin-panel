@@ -4,7 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useSchema } from "@/lib/schema-context";
-import { AuthExpiredError, ApiError, fetchModelList, refreshMerchantBalances } from "@/lib/api";
+import {
+  AuthExpiredError,
+  ApiError,
+  fetchModelList,
+  refreshMerchantBalances,
+  sendTransactionCallbacks,
+  sendSettlementCallbacks,
+} from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { DataTable } from "@/components/DataTable";
@@ -17,6 +24,12 @@ const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements
 // `/admin/{key}/bulk-actions` — see `app.services.merchant_bulk_actions_service`
 // / `app.services.cache_clear_actions_service`.
 const BULK_ACTIONS_KEYS = new Set(["merchants", "payment-method-companies", "merchant-payment-methods"]);
+
+// Models with a "send callback" bulk action on the list itself (row
+// checkboxes + a button), rather than a separate /bulk-actions page — see
+// `app.services.callback_service`, porting `TransactionAdmin
+// .send_callbacks_to_merchants` / `SettlementsAdmin.send_callbacks_to_tg_user`.
+const CALLBACK_KEYS = new Set(["transactions", "settlements"]);
 
 export default function AdminModelListPage() {
   const params = useParams<{ key: string }>();
@@ -40,6 +53,10 @@ export default function AdminModelListPage() {
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [sendingCallbacks, setSendingCallbacks] = useState(false);
+  const [callbackMessage, setCallbackMessage] = useState<string | null>(null);
+  const [callbackError, setCallbackError] = useState<string | null>(null);
 
   const debouncedSearch = useDebouncedValue(search, 350);
   const debouncedFilters = useDebouncedValue(filters, 350);
@@ -51,6 +68,9 @@ export default function AdminModelListPage() {
     setFilters({});
     setOrdering(config?.default_ordering?.[0] ?? null);
     setNoteDismissed(false);
+    setSelectedIds(new Set());
+    setCallbackMessage(null);
+    setCallbackError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey]);
 
@@ -115,6 +135,55 @@ export default function AdminModelListPage() {
     }
   }
 
+  function toggleSelected(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((prev) => {
+      const allSelected = items.length > 0 && items.every((r) => prev.has(Number(r["id"])));
+      if (allSelected) return new Set();
+      return new Set(items.map((r) => Number(r["id"])));
+    });
+  }
+
+  async function handleSendCallbacks() {
+    if (selectedIds.size === 0) return;
+    setSendingCallbacks(true);
+    setCallbackMessage(null);
+    setCallbackError(null);
+    try {
+      const ids = Array.from(selectedIds);
+      const { results } =
+        modelKey === "settlements" ? await sendSettlementCallbacks(ids) : await sendTransactionCallbacks(ids);
+      const counts = Object.values(results).reduce<Record<string, number>>((acc, outcome) => {
+        const bucket = outcome.startsWith("error") ? "error" : outcome.startsWith("skipped") ? "skipped" : outcome;
+        acc[bucket] = (acc[bucket] ?? 0) + 1;
+        return acc;
+      }, {});
+      setCallbackMessage(
+        Object.entries(counts)
+          .map(([bucket, count]) => `${bucket}: ${count}`)
+          .join(", ")
+      );
+      setSelectedIds(new Set());
+    } catch (err) {
+      if (err instanceof AuthExpiredError) {
+        logout();
+        router.replace("/login");
+        return;
+      }
+      setCallbackError(err instanceof Error ? err.message : "Не удалось отправить коллбэки.");
+    } finally {
+      setSendingCallbacks(false);
+    }
+  }
+
   function handleSort(field: string) {
     setPage(1);
     setOrdering((prev) => {
@@ -166,6 +235,15 @@ export default function AdminModelListPage() {
               Массовые действия
             </Link>
           )}
+          {CALLBACK_KEYS.has(modelKey) && selectedIds.size > 0 && (
+            <button
+              onClick={handleSendCallbacks}
+              disabled={sendingCallbacks}
+              className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-accent disabled:opacity-60"
+            >
+              {sendingCallbacks ? "Отправка…" : `Отправить коллбэки (${selectedIds.size})`}
+            </button>
+          )}
           {modelKey === "merchant-balances" && (
             <button
               onClick={handleRefreshBalances}
@@ -194,6 +272,17 @@ export default function AdminModelListPage() {
       {refreshError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {refreshError}
+        </div>
+      )}
+
+      {callbackMessage && (
+        <div className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
+          Коллбэки обработаны: {callbackMessage}
+        </div>
+      )}
+      {callbackError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          {callbackError}
         </div>
       )}
 
@@ -257,6 +346,9 @@ export default function AdminModelListPage() {
           ordering={ordering}
           onSort={handleSort}
           enhanced={ENHANCED_KEYS.has(modelKey)}
+          selected={CALLBACK_KEYS.has(modelKey) ? selectedIds : undefined}
+          onToggleSelected={CALLBACK_KEYS.has(modelKey) ? toggleSelected : undefined}
+          onToggleSelectAll={CALLBACK_KEYS.has(modelKey) ? toggleSelectAll : undefined}
         />
       </div>
 

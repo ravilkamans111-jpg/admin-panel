@@ -7,6 +7,7 @@ import { useSchema } from "@/lib/schema-context";
 import { AuthExpiredError, createSettlement, createRecord } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { humanizeFieldName } from "@/lib/format";
+import { FkSelect } from "@/components/FkSelect";
 import type { AdminModelConfig } from "@/lib/types";
 
 // "settlements" keeps its own dedicated form below — creating one runs real
@@ -286,18 +287,25 @@ function GenericCreateForm({ config }: { config: AdminModelConfig }) {
       )}
 
       <form onSubmit={handleSubmit} className="card space-y-3 p-4">
-        {config.creatable_fields.map((field) => (
-          <div key={field}>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
-              {humanizeFieldName(field)}
-            </label>
-            <input
-              value={form[field] ?? ""}
-              onChange={(e) => setField(field, e.target.value)}
-              className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-            />
-          </div>
-        ))}
+        {config.creatable_fields.map((field) => {
+          const targetKey = config.fk_fields[field];
+          return (
+            <div key={field}>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
+                {humanizeFieldName(field)}
+              </label>
+              {targetKey ? (
+                <FkSelect targetKey={targetKey} value={form[field] ?? ""} onChange={(v) => setField(field, v)} />
+              ) : (
+                <input
+                  value={form[field] ?? ""}
+                  onChange={(e) => setField(field, e.target.value)}
+                  className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+                />
+              )}
+            </div>
+          );
+        })}
 
         <div className="flex gap-2 pt-2">
           <button

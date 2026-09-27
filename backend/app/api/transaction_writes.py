@@ -26,10 +26,30 @@ from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
 from app.db.control_plane import get_control_plane_session
 from app.models.tenant import Transaction
-from app.services import audit_service, transaction_write_service
+from app.services import audit_service, callback_service, transaction_write_service
 from app.services.transaction_write_service import EDITABLE_FIELDS
 
 router = APIRouter(prefix="/admin/transactions", tags=["transactions-write"])
+
+
+class SendCallbacksRequest(BaseModel):
+    transaction_ids: list[int]
+
+
+@router.post("/callbacks/send")
+async def send_callbacks_to_merchants(
+    body: SendCallbacksRequest,
+    current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
+    tenant_session: AsyncSession = Depends(get_tenant_session),
+) -> dict:
+    """Port of `TransactionAdmin.send_callbacks_to_merchants` ("Отправить
+    коллбэки выбранным мерчантам") — see `app.services.callback_service`."""
+    if not body.transaction_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "transaction_ids is required")
+    results = await callback_service.send_transaction_callbacks(
+        tenant_session, brand_id=current_user.brand_id, transaction_ids=body.transaction_ids
+    )
+    return {"results": results}
 
 
 class UpdateTransactionRequest(BaseModel):

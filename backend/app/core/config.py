@@ -137,6 +137,20 @@ def get_brand_admin_public_key(brand_id: str) -> str | None:
     return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/transaction_admin", "admin_public_key")
 
 
+def get_brand_bot_callback_url(brand_id: str) -> str | None:
+    """Mirrors the source's `settings.BOT_CALLBACK_URL` — where
+    `CallbacksService.send_message_to_tg_user` posts a Settlement's payload
+    for the Telegram bot to deliver to the client. Optional by design: a
+    brand without a bot integration configured just can't use the "Отправить
+    коллбэки выбранным пользователям в телеграмм" admin action, same as
+    source would fail loudly per-call rather than at startup."""
+    brand_key = brand_id.upper().replace("-", "_")
+    if env_settings.use_local_env_secrets:
+        return os.environ.get(f"BRAND_{brand_key}_BOT_CALLBACK_URL")
+    vault = get_vault_client()
+    return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/callbacks", "bot_callback_url")
+
+
 def get_brand_redis_config(brand_id: str) -> BrandRedisConfig:
     brand_key = brand_id.upper().replace("-", "_")
     if env_settings.use_local_env_secrets:

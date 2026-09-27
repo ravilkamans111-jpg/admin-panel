@@ -116,6 +116,23 @@ class AdminModelConfig:
     creatable_fields: list[str] = field(default_factory=list)
     creatable: bool = False
     deletable: bool = False
+    # How to build a human-readable label for a row of THIS model when it's
+    # used as the target of a foreign-key picker (see `fk_fields` below) —
+    # a `{field}` template using only this model's OWN columns. Mirrors the
+    # source Django model's `__str__` where that reduces to own-field-only
+    # substitution (Currency, Bank, Company, PaymentMethod, DjangoAuthUser);
+    # where source's `__str__` needs a cross-model join (Merchant,
+    # PaymentMethodTemplate, PaymentMethodCascade, ...) this is a
+    # deliberately simplified same-spirit label, not a byte-identical port.
+    str_template: str | None = None
+    # FK columns (present in editable_fields/creatable_fields) that should
+    # render as a dropdown of real records instead of a raw id input —
+    # maps this model's own FK column name to the REGISTRY KEY of the
+    # model it points to. Only set for targets that have a `str_template`;
+    # a handful of genuinely composite/ambiguous FKs (e.g.
+    # PaymentMethodCompany, whose source `__str__` needs two joins) are
+    # deliberately left as plain id inputs rather than faked.
+    fk_fields: dict[str, str] = field(default_factory=dict)
 
     @property
     def app_label(self) -> str:
@@ -169,6 +186,16 @@ register(
             "amount_after_commission", "callback_url", "p2p_card",
             "status_addition_info", "addition_info", "original_tracker_id", "merchant_client_id",
         ],
+        # merchant_id isn't editable (set once, never re-pointed to a
+        # different merchant) so this never drives a write-picker — it's
+        # here purely so list/detail views can show the merchant's name
+        # instead of a bare id (mirrors source list_display's 'merchant').
+        # payment_method_company_id's label (source's
+        # 'payment_method_company_company', the "partner"/company name) needs
+        # a two-hop join a single-table str_template can't express, so it's
+        # handled by the transactions-only `_enrich_transaction_labels` in
+        # app.repositories.admin_repository instead of fk_fields.
+        fk_fields={"merchant_id": "merchants"},
     )
 )
 
@@ -223,6 +250,7 @@ register(
         default_ordering=["-date_create"],
         notes="merchant_name не пересчитывается при правке через админку, даже если изменить merchant.",
         editable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
+        fk_fields={"merchant_id": "merchants"},
     )
 )
 
@@ -249,6 +277,8 @@ register(
         creatable_fields=["name", "public_key", "private_key", "transaction_id", "project_url", "user_id"],
         creatable=True,
         deletable=True,
+        str_template="{name}",
+        fk_fields={"user_id": "users"},
     )
 )
 
@@ -289,6 +319,7 @@ register(
         ],
         creatable=True,
         deletable=True,
+        fk_fields={"currency_id": "currencies", "merchant_id": "merchants"},
     )
 )
 
@@ -306,6 +337,7 @@ register(
         creatable_fields=["allowed_ip", "merchant_id"],
         creatable=True,
         deletable=True,
+        fk_fields={"merchant_id": "merchants"},
     )
 )
 
@@ -369,6 +401,7 @@ register(
         ],
         creatable=True,
         deletable=True,
+        fk_fields={"user_id": "users"},
     )
 )
 
@@ -382,6 +415,7 @@ register(
         list_display=_all_fields(DjangoAuthUser),
         list_filter=["is_active", "is_staff", "is_superuser"],
         search_fields=["username", "email", "first_name", "last_name"],
+        str_template="{username}",
     )
 )
 
@@ -402,6 +436,7 @@ register(
         creatable_fields=["name"],
         creatable=True,
         deletable=True,
+        str_template="{name}",
     )
 )
 
@@ -419,6 +454,8 @@ register(
         creatable_fields=["name", "sub_method", "direction", "token", "currency_id"],
         creatable=True,
         deletable=True,
+        str_template="[{id}] {direction}: {token}",
+        fk_fields={"currency_id": "currencies"},
     )
 )
 
@@ -467,6 +504,7 @@ register(
             "only_admin_configure",
             "cascade_id",
         ],
+        fk_fields={"cascade_id": "payment-method-cascades"},
     )
 )
 
@@ -506,6 +544,7 @@ register(
         ],
         creatable=True,
         deletable=True,
+        fk_fields={"company_id": "companies", "currency_id": "currencies"},
     )
 )
 
@@ -571,6 +610,8 @@ register(
         ],
         creatable=True,
         deletable=True,
+        str_template="{name} — {default_personal_rate}%",
+        fk_fields={"currency_id": "currencies"},
     )
 )
 
@@ -587,6 +628,7 @@ register(
         creatable_fields=["payment_method_id", "template_id"],
         creatable=True,
         deletable=True,
+        fk_fields={"payment_method_id": "payment-methods", "template_id": "payment-method-templates"},
     )
 )
 
@@ -604,6 +646,8 @@ register(
         editable_fields=["name", "description", "is_active"],
         creatable_fields=["name", "payment_method_id", "description", "is_active"],
         creatable=True,
+        str_template="{name}",
+        fk_fields={"payment_method_id": "payment-methods"},
     )
 )
 
@@ -622,6 +666,7 @@ register(
         creatable_fields=["cascade_id", "payment_method_company_id", "priority", "is_active"],
         creatable=True,
         deletable=True,
+        fk_fields={"cascade_id": "payment-method-cascades"},
     )
 )
 
@@ -642,6 +687,8 @@ register(
         creatable_fields=["iso_code", "addition_name", "limit", "binance_bank_id"],
         creatable=True,
         deletable=True,
+        str_template="{iso_code}",
+        fk_fields={"binance_bank_id": "banks"},
     )
 )
 
@@ -658,6 +705,7 @@ register(
         creatable_fields=["name"],
         creatable=True,
         deletable=True,
+        str_template="{name}",
     )
 )
 
@@ -701,6 +749,7 @@ register(
         ],
         creatable=True,
         deletable=True,
+        fk_fields={"bank_id": "banks", "currency_id": "currencies"},
     )
 )
 
@@ -721,6 +770,7 @@ register(
         creatable_fields=["currency_for_sale_id", "currency_for_buy", "coefficient", "date_create"],
         creatable=True,
         deletable=True,
+        fk_fields={"currency_for_sale_id": "currencies"},
     )
 )
 
@@ -791,6 +841,7 @@ register(
         ],
         creatable=True,
         deletable=True,
+        fk_fields={"payment_method_id": "payment-methods"},
     )
 )
 
@@ -812,4 +863,6 @@ def config_to_dict(config: AdminModelConfig) -> dict[str, Any]:
         "creatable": config.creatable,
         "deletable": config.deletable,
         "is_writable": config.is_writable,
+        "str_template": config.str_template,
+        "fk_fields": config.fk_fields,
     }

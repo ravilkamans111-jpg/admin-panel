@@ -10,6 +10,7 @@ bad field names — the service layer translates that into a domain exception
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
@@ -18,7 +19,7 @@ from sqlalchemy import JSON, String, Text, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
-from app.models.tenant import Currency
+from app.models.tenant import Company, Currency, PaymentMethodCompany
 from app.registry.admin_models import AdminModelConfig
 
 DEFAULT_PAGE_SIZE = 25
@@ -160,6 +161,8 @@ async def run_list_query(
     rows = (await session.execute(list_stmt)).scalars().all()
     items = [row_to_dict(row) for row in rows]
     await _enrich_currency_codes(session, items)
+    await _enrich_fk_labels(session, config, items)
+    await _enrich_transaction_labels(session, config, items)
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -180,6 +183,64 @@ async def _enrich_currency_codes(session: AsyncSession, rows: list[dict[str, Any
             row["currency_code"] = code_by_id[currency_id]
 
 
+def _render_str_template(template: str, row: dict[str, Any]) -> str:
+    """Fills a `{field}` template from a row's own fields — server-side twin
+    of the frontend's `FkSelect.tsx` `renderTemplate`, so list/detail views
+    can show the same label a create/edit FK-picker option would show,
+    without an extra per-row round trip from the browser."""
+    return re.sub(r"\{(\w+)\}", lambda m: "" if row.get(m.group(1)) is None else str(row[m.group(1)]), template)
+
+
+async def _enrich_fk_labels(session: AsyncSession, config: AdminModelConfig, rows: list[dict[str, Any]]) -> None:
+    """For every FK column declared in `config.fk_fields` (see
+    `AdminModelConfig.fk_fields`), adds a sibling `<field>_label` rendered
+    from the target model's `str_template` — the same metadata that backs
+    the create/edit FK-picker dropdowns, reused here so list/detail views
+    show a real name instead of a bare numeric id too (not just forms)."""
+    from app.registry.admin_models import get_config  # local import: registry sits below repositories in the layering
+
+    for field_name, target_key in config.fk_fields.items():
+        ids = {row[field_name] for row in rows if row.get(field_name) is not None}
+        if not ids:
+            continue
+        target_config = get_config(target_key)
+        if target_config is None or not target_config.str_template:
+            continue
+        pk_column = _column(target_config.model, target_config.pk_field)
+        instances = (await session.execute(select(target_config.model).where(pk_column.in_(ids)))).scalars().all()
+        label_by_id = {
+            getattr(instance, target_config.pk_field): _render_str_template(target_config.str_template, row_to_dict(instance))
+            for instance in instances
+        }
+        for row in rows:
+            fk_value = row.get(field_name)
+            if fk_value is not None and fk_value in label_by_id:
+                row[f"{field_name}_label"] = label_by_id[fk_value]
+
+
+async def _enrich_transaction_labels(session: AsyncSession, config: AdminModelConfig, rows: list[dict[str, Any]]) -> None:
+    """Transaction-only: adds `payment_method_company_id_label` (the
+    "partner" company name — source's `payment_method_company_company`
+    list_display method). Needs a two-hop join (PaymentMethodCompany ->
+    Company) a single-table `str_template` can't express, so it's handled
+    here instead of via `fk_fields`/`_enrich_fk_labels`."""
+    if config.key != "transactions":
+        return
+    ids = {row["payment_method_company_id"] for row in rows if row.get("payment_method_company_id") is not None}
+    if not ids:
+        return
+    result = await session.execute(
+        select(PaymentMethodCompany.id, Company.name)
+        .join(Company, PaymentMethodCompany.company_id == Company.id)
+        .where(PaymentMethodCompany.id.in_(ids))
+    )
+    name_by_id = dict(result.all())
+    for row in rows:
+        pmc_id = row.get("payment_method_company_id")
+        if pmc_id is not None and pmc_id in name_by_id:
+            row["payment_method_company_id_label"] = name_by_id[pmc_id]
+
+
 async def get_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) -> dict[str, Any] | None:
     column = _column(config.model, config.pk_field)
     stmt = select(config.model).where(column == pk)
@@ -188,6 +249,8 @@ async def get_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) ->
         return None
     row = row_to_dict(instance)
     await _enrich_currency_codes(session, [row])
+    await _enrich_fk_labels(session, config, [row])
+    await _enrich_transaction_labels(session, config, [row])
     return row
 
 

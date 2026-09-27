@@ -15,14 +15,35 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import CurrentUser, get_tenant_write_session, require_role
+from app.api.deps import CurrentUser, get_tenant_session, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
 from app.db.control_plane import get_control_plane_session
-from app.services import audit_service, settlement_write_service
+from app.services import audit_service, callback_service, settlement_write_service
 from app.services.settlement_write_service import CREATE_ONLY_FIELDS, EDITABLE_FIELDS
 
 router = APIRouter(prefix="/admin/settlements", tags=["settlements-write"])
+
+
+class SendSettlementCallbacksRequest(BaseModel):
+    settlement_ids: list[int]
+
+
+@router.post("/callbacks/send")
+async def send_callbacks_to_tg_user(
+    body: SendSettlementCallbacksRequest,
+    current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
+    tenant_session: AsyncSession = Depends(get_tenant_session),
+) -> dict:
+    """Port of `SettlementsAdmin.send_callbacks_to_tg_user` ("Отправить
+    коллбэки выбранным пользователям в телеграмм") — see
+    `app.services.callback_service`."""
+    if not body.settlement_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "settlement_ids is required")
+    results = await callback_service.send_settlement_callbacks(
+        tenant_session, brand_id=current_user.brand_id, settlement_ids=body.settlement_ids
+    )
+    return {"results": results}
 
 _DECIMAL_FIELDS = {
     "amount", "commission", "our_funds", "clients_funds", "conversion_rate",

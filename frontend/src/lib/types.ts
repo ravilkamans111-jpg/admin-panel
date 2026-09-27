@@ -38,6 +38,8 @@ export interface AdminModelConfig {
   creatable: boolean;
   deletable: boolean;
   is_writable: boolean;
+  str_template?: string | null;
+  fk_fields: Record<string, string>;
 }
 
 export interface ListResponse<T = Record<string, unknown>> {

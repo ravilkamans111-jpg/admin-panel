@@ -438,3 +438,27 @@ export function updateRecordGeneric(
 export function deleteRecord(modelKey: string, id: string | number): Promise<void> {
   return authedFetch<void>(`/admin/${modelKey}/${id}`, { method: "DELETE" });
 }
+
+// ---------------------------------------------------------------------------
+// Callback-sending bulk actions — port of `TransactionAdmin
+// .send_callbacks_to_merchants` / `SettlementsAdmin.send_callbacks_to_tg_user`
+// (`app.services.callback_service`).
+// ---------------------------------------------------------------------------
+
+export interface CallbackSendResult {
+  results: Record<string, string>;
+}
+
+export function sendTransactionCallbacks(transactionIds: number[]): Promise<CallbackSendResult> {
+  return authedFetch<CallbackSendResult>("/admin/transactions/callbacks/send", {
+    method: "POST",
+    body: { transaction_ids: transactionIds },
+  });
+}
+
+export function sendSettlementCallbacks(settlementIds: number[]): Promise<CallbackSendResult> {
+  return authedFetch<CallbackSendResult>("/admin/settlements/callbacks/send", {
+    method: "POST",
+    body: { settlement_ids: settlementIds },
+  });
+}

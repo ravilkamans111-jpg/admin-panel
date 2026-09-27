@@ -20,6 +20,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { formatCellValue, formatDateMaybe, humanizeFieldName } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
+import { FkSelect } from "@/components/FkSelect";
 
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
 
@@ -238,10 +239,10 @@ export default function AdminModelDetailPage() {
   if (!record || !config) return null;
 
   const enhanced = ENHANCED_KEYS.has(modelKey);
-  // `currency_code` is a server-added enrichment sibling of `currency_id`
-  // (see app.repositories.admin_repository), not a real model column —
-  // shown inline on the `currency_id` row itself, not as its own row.
-  const fields = Object.keys(record).filter((f) => f !== "currency_code");
+  // `currency_code` and any `<field>_label` are server-added enrichment
+  // siblings (see app.repositories.admin_repository), not real model
+  // columns — shown inline on their own field's row, not as their own row.
+  const fields = Object.keys(record).filter((f) => f !== "currency_code" && !f.endsWith("_label"));
   const editableSet = new Set(config.editable_fields);
 
   return (
@@ -349,6 +350,14 @@ export default function AdminModelDetailPage() {
                       </span>
                     )}
                   </div>
+                ) : config.fk_fields[field] ? (
+                  <div className="w-full max-w-xs">
+                    <FkSelect
+                      targetKey={config.fk_fields[field]}
+                      value={form[field] ?? ""}
+                      onChange={(v) => setForm((f) => ({ ...f, [field]: v }))}
+                    />
+                  </div>
                 ) : (
                   <input
                     value={form[field] ?? ""}
@@ -366,6 +375,8 @@ export default function AdminModelDetailPage() {
             // any record with a `currency_id` column with a sibling
             // `currency_code` (app.repositories.admin_repository).
             display = String(record["currency_code"]);
+          } else if (record[`${field}_label`] != null) {
+            display = String(record[`${field}_label`]);
           } else if (enhanced && field === "status" && value !== null && value !== undefined) {
             display = <StatusBadge value={value} />;
           } else if (field.startsWith("date_") || field.endsWith("_at") || field === "date") {
