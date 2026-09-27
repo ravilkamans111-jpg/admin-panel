@@ -277,7 +277,12 @@ register(
         creatable_fields=["name", "public_key", "private_key", "transaction_id", "project_url", "user_id"],
         creatable=True,
         deletable=True,
-        str_template="{name}",
+        # Matches source's real `Merchant.__str__` (`f'{user.username}: {name}'`)
+        # exactly, not the earlier simplified own-fields-only version — see
+        # `_enrich_fk_labels`'s one-level recursion in admin_repository.py,
+        # which is what makes `{user_id_label}` (itself derived from
+        # `fk_fields={"user_id": "users"}` below) available to substitute here.
+        str_template="{user_id_label}: {name}",
         fk_fields={"user_id": "users"},
     )
 )
@@ -481,6 +486,11 @@ register(
             "transaction_min_limit",
             "transaction_max_limit",
         ],
+        # Read-only enrichment (neither field is in editable_fields, so this
+        # never drives a write-picker) — just so list/detail views show the
+        # partner company and method name instead of bare ids, matching
+        # source list_display's `payment_method`/`company` columns.
+        fk_fields={"company_id": "companies", "payment_method_id": "payment-methods"},
     )
 )
 
@@ -504,7 +514,15 @@ register(
             "only_admin_configure",
             "cascade_id",
         ],
-        fk_fields={"cascade_id": "payment-method-cascades"},
+        # merchant_id/payment_method_id aren't editable (immutable after
+        # creation) so, like Transaction.merchant_id, these only drive read
+        # enrichment — list/detail views showing the merchant and method
+        # name instead of bare ids, matching source list_display.
+        fk_fields={
+            "cascade_id": "payment-method-cascades",
+            "merchant_id": "merchants",
+            "payment_method_id": "payment-methods",
+        },
     )
 )
 

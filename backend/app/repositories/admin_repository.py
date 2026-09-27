@@ -191,12 +191,23 @@ def _render_str_template(template: str, row: dict[str, Any]) -> str:
     return re.sub(r"\{(\w+)\}", lambda m: "" if row.get(m.group(1)) is None else str(row[m.group(1)]), template)
 
 
-async def _enrich_fk_labels(session: AsyncSession, config: AdminModelConfig, rows: list[dict[str, Any]]) -> None:
+async def _enrich_fk_labels(
+    session: AsyncSession, config: AdminModelConfig, rows: list[dict[str, Any]], *, _depth: int = 0
+) -> None:
     """For every FK column declared in `config.fk_fields` (see
     `AdminModelConfig.fk_fields`), adds a sibling `<field>_label` rendered
     from the target model's `str_template` — the same metadata that backs
     the create/edit FK-picker dropdowns, reused here so list/detail views
-    show a real name instead of a bare numeric id too (not just forms)."""
+    show a real name instead of a bare numeric id too (not just forms).
+
+    Recurses one level into the target's OWN `fk_fields` before rendering
+    its `str_template`, so a template referencing a field that isn't a
+    plain column but another enriched label (e.g. Merchant's
+    `"{user_id_label}: {name}"`, matching source's real
+    `f'{user.username}: {name}'`) resolves correctly. `_depth` caps this at
+    2 hops — deep enough for every real template in the registry, and a
+    guard against a future fk_fields cycle turning into infinite recursion.
+    """
     from app.registry.admin_models import get_config  # local import: registry sits below repositories in the layering
 
     for field_name, target_key in config.fk_fields.items():
@@ -208,9 +219,12 @@ async def _enrich_fk_labels(session: AsyncSession, config: AdminModelConfig, row
             continue
         pk_column = _column(target_config.model, target_config.pk_field)
         instances = (await session.execute(select(target_config.model).where(pk_column.in_(ids)))).scalars().all()
+        target_rows = [row_to_dict(instance) for instance in instances]
+        if target_config.fk_fields and _depth < 2:
+            await _enrich_fk_labels(session, target_config, target_rows, _depth=_depth + 1)
         label_by_id = {
-            getattr(instance, target_config.pk_field): _render_str_template(target_config.str_template, row_to_dict(instance))
-            for instance in instances
+            target_row[target_config.pk_field]: _render_str_template(target_config.str_template, target_row)
+            for target_row in target_rows
         }
         for row in rows:
             fk_value = row.get(field_name)
