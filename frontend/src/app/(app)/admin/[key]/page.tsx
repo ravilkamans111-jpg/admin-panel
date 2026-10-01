@@ -48,7 +48,6 @@ export default function AdminModelListPage() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [noteDismissed, setNoteDismissed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
@@ -67,7 +66,6 @@ export default function AdminModelListPage() {
     setSearch("");
     setFilters({});
     setOrdering(config?.default_ordering?.[0] ?? null);
-    setNoteDismissed(false);
     setSelectedIds(new Set());
     setCallbackMessage(null);
     setCallbackError(null);
@@ -283,18 +281,6 @@ export default function AdminModelListPage() {
       {callbackError && (
         <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
           {callbackError}
-        </div>
-      )}
-
-      {config.notes && !noteDismissed && (
-        <div className="flex items-start justify-between gap-3 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200">
-          <span>{config.notes}</span>
-          <button
-            onClick={() => setNoteDismissed(true)}
-            className="shrink-0 text-xs font-medium text-amber-700 hover:underline dark:text-amber-300"
-          >
-            Скрыть
-          </button>
         </div>
       )}
 

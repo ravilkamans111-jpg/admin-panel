@@ -32,7 +32,6 @@ export interface AdminModelConfig {
   list_filter: string[];
   search_fields: string[];
   default_ordering: string[];
-  notes?: string | null;
   editable_fields: string[];
   creatable_fields: string[];
   creatable: boolean;

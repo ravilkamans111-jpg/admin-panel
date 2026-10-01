@@ -101,7 +101,6 @@ class AdminModelConfig:
     search_fields: list[str] = field(default_factory=list)
     default_ordering: list[str] = field(default_factory=list)
     pk_field: str = "id"
-    notes: str | None = None
     # Opt-in, not opt-out: empty means "not writable via the admin engine at
     # all" — matches Django's own default-deny shape (a field is only
     # editable if a ModelAdmin explicitly exposes it). The write path
@@ -172,7 +171,16 @@ register(
         model=Transaction,
         verbose_name="Транзакция",
         verbose_name_plural="Транзакции",
-        list_display=_all_fields(Transaction),
+        # Matches source TransactionAdmin.list_display order (merchant/
+        # partner columns right after id, like the original Django admin),
+        # not _all_fields()'s raw column-declaration order.
+        list_display=[
+            "id", "merchant_id", "payment_method_company_id", "date_create", "date_update",
+            "status", "direction", "partner_system_id", "merchant_system_id", "merchant_client_id",
+            "amount", "usdt_fixed_course", "amount_after_commission_in_usdt", "commission",
+            "partner_income", "pure_our_income", "amount_after_commission", "p2p_card", "tracker_id",
+            "status_addition_info", "addition_info", "callback_url", "original_tracker_id",
+        ],
         list_filter=["status", "direction", "merchant_id", "payment_method_company_id"],
         search_fields=["tracker_id", "partner_system_id", "merchant_system_id", "merchant_client_id"],
         default_ordering=["-date_create"],
@@ -210,7 +218,6 @@ register(
         list_filter=["status", "settl_type"],
         search_fields=["transaction_id", "wallet", "tracker_link", "tg_id"],
         default_ordering=["-date_create"],
-        notes="Создание/правка сеттлмента создаёт или обновляет связанную транзакцию как часть сохранения.",
         editable_fields=[
             "status", "amount", "commission", "our_funds", "clients_funds",
             "conversion_rate", "amount_in_usdt", "final_amount", "final_amount_in_usdt",
@@ -248,7 +255,6 @@ register(
         list_filter=["permanent_ban", "second_chance"],
         search_fields=["merchant_name", "user_id"],
         default_ordering=["-date_create"],
-        notes="merchant_name не пересчитывается при правке через админку, даже если изменить merchant.",
         editable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
         fk_fields={"merchant_id": "merchants"},
     )
@@ -268,11 +274,6 @@ register(
         list_display=_all_fields(Merchant),
         list_filter=["user_id"],
         search_fields=["name", "public_key", "project_url"],
-        notes=(
-            "public_key/private_key хранятся в исходной схеме в открытом виде — "
-            "показ их здесь несёт реальный риск утечки; перед более широким "
-            "раскатыванием стоит ужесточить RBAC на это поле."
-        ),
         editable_fields=["name", "public_key", "private_key", "transaction_id", "project_url"],
         creatable_fields=["name", "public_key", "private_key", "transaction_id", "project_url", "user_id"],
         creatable=True,
@@ -297,11 +298,6 @@ register(
         list_display=_all_fields(MerchantBalance),
         list_filter=["merchant_id", "currency_id"],
         default_ordering=["-id"],
-        notes=(
-            "«Обновить балансы» пересчитывает balance/blocked_balance_in/out из "
-            "леджера транзакций. Пары мерчант/валюта без существующей строки баланса "
-            "не создаются. Поля ниже редактируются напрямую — правьте с осторожностью."
-        ),
         editable_fields=[
             "balance",
             "blocked_balance_in",
@@ -471,10 +467,16 @@ register(
         model=PaymentMethodCompany,
         verbose_name="Конфиг метода у партнёра",
         verbose_name_plural="Конфиги методов у партнёров",
-        list_display=_all_fields(PaymentMethodCompany),
+        # Matches source PaymentMethodCompanyAdmin.list_display order
+        # (payment_method/company columns right after id).
+        list_display=[
+            "id", "payment_method_id", "company_id", "is_active", "priority", "partner_rate",
+            "changing_rate", "additional_commission", "settlement_commission", "daily_amount_limit",
+            "daily_count_limit", "transaction_min_limit", "transaction_max_limit", "current_daily_count",
+            "current_daily_coun_success", "current_daily_amount", "current_daily_amount_success", "last_reset",
+        ],
         list_filter=["is_active", "company_id", "payment_method_id"],
         default_ordering=["priority"],
-        notes="Изменение только partner_rate не сбрасывает Redis-кэш методов оплаты — нужно менять is_active/лимиты/priority.",
         editable_fields=[
             "is_active",
             "priority",
@@ -501,7 +503,13 @@ register(
         model=MerchantPaymentMethod,
         verbose_name="Платёжный метод мерчанта",
         verbose_name_plural="Платёжные методы мерчантов",
-        list_display=_all_fields(MerchantPaymentMethod),
+        # Matches source MerchantPaymentMethodAdmin.list_display order
+        # (merchant/payment_method columns right after id).
+        list_display=[
+            "id", "merchant_id", "payment_method_id", "personal_rate", "test_mode",
+            "additional_commission", "block", "no_callback", "transaction_min_limit",
+            "transaction_max_limit", "only_admin_configure", "cascade_id",
+        ],
         list_filter=["test_mode", "block", "merchant_id", "payment_method_id"],
         editable_fields=[
             "personal_rate",
@@ -535,7 +543,6 @@ register(
         verbose_name_plural="Балансы компаний",
         list_display=_all_fields(CompanyBalance),
         list_filter=["company_id", "currency_id"],
-        notes="Поля редактируются напрямую — правьте с осторожностью.",
         editable_fields=[
             "available_balance",
             "blocked_balance_in",
@@ -660,7 +667,6 @@ register(
         list_display=_all_fields(PaymentMethodCascade),
         list_filter=["is_active", "payment_method_id"],
         search_fields=["name", "description"],
-        notes="Платёжный метод неизменяем после создания каскада.",
         editable_fields=["name", "description", "is_active"],
         creatable_fields=["name", "payment_method_id", "description", "is_active"],
         creatable=True,
@@ -679,7 +685,6 @@ register(
         list_display=_all_fields(PaymentMethodCascadeItem),
         list_filter=["cascade_id", "is_active"],
         default_ordering=["priority"],
-        notes="Метод компании должен совпадать с методом каскада; priority уникален в рамках каскада.",
         editable_fields=["payment_method_company_id", "priority", "is_active"],
         creatable_fields=["cascade_id", "payment_method_company_id", "priority", "is_active"],
         creatable=True,
@@ -875,7 +880,6 @@ def config_to_dict(config: AdminModelConfig) -> dict[str, Any]:
         "list_filter": config.list_filter,
         "search_fields": config.search_fields,
         "default_ordering": config.default_ordering,
-        "notes": config.notes,
         "editable_fields": config.editable_fields,
         "creatable_fields": config.creatable_fields,
         "creatable": config.creatable,
