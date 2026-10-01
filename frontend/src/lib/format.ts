@@ -40,6 +40,34 @@ export function humanizeFieldName(field: string): string {
     .join(" ");
 }
 
+/**
+ * FK columns whose displayed value is a real name/label, not a bare id —
+ * `config.fk_fields` (backend: `AdminModelConfig.fk_fields`) plus two cases
+ * the backend enriches without a `fk_fields` entry: `currency_id` (any
+ * model, via `_enrich_currency_codes`) and transactions'
+ * `payment_method_company_id` (via `_enrich_transaction_labels`'s two-hop
+ * join — see app.repositories.admin_repository). A column in this set
+ * should be headed by the thing's name, not "... Id".
+ */
+export function nameEnrichedFields(fkFields: Record<string, string>, modelKey: string, columns: string[]): Set<string> {
+  const fields = new Set<string>(Object.keys(fkFields));
+  if (columns.includes("currency_id")) fields.add("currency_id");
+  if (modelKey === "transactions" && columns.includes("payment_method_company_id")) {
+    fields.add("payment_method_company_id");
+  }
+  return fields;
+}
+
+/** Column/field header for `field` — drops the trailing "_id" when the
+ * displayed value is a real name (see `nameEnrichedFields`), so e.g.
+ * "merchant_id" heads as "Merchant" rather than the misleading "Merchant Id". */
+export function fieldHeaderLabel(field: string, nameFields: Set<string>): string {
+  if (nameFields.has(field) && field.endsWith("_id")) {
+    return humanizeFieldName(field.slice(0, -3));
+  }
+  return humanizeFieldName(field);
+}
+
 export function formatCellValue(value: unknown): string {
   if (value === null || value === undefined) return "—";
   if (typeof value === "boolean") return value ? "Да" : "Нет";

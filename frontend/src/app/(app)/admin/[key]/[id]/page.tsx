@@ -18,7 +18,7 @@ import {
   type CommissionContext,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { formatCellValue, formatDateMaybe, humanizeFieldName } from "@/lib/format";
+import { fieldHeaderLabel, formatCellValue, formatDateMaybe, nameEnrichedFields } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { FkSelect } from "@/components/FkSelect";
 
@@ -244,6 +244,7 @@ export default function AdminModelDetailPage() {
   // columns — shown inline on their own field's row, not as their own row.
   const fields = Object.keys(record).filter((f) => f !== "currency_code" && !f.endsWith("_label"));
   const editableSet = new Set(config.editable_fields);
+  const nameFields = nameEnrichedFields(config.fk_fields, modelKey, fields);
 
   return (
     <div className="space-y-4">
@@ -323,7 +324,7 @@ export default function AdminModelDetailPage() {
             return (
               <div key={field} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
                 <div className="w-full shrink-0 text-xs font-medium text-[var(--text-muted)] sm:w-56">
-                  {humanizeFieldName(field)}
+                  {fieldHeaderLabel(field, nameFields)}
                 </div>
                 {field === "status" ? (
                   <select
@@ -387,7 +388,7 @@ export default function AdminModelDetailPage() {
           return (
             <div key={field} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
               <div className="w-full shrink-0 text-xs font-medium text-[var(--text-muted)] sm:w-56">
-                {humanizeFieldName(field)}
+                {fieldHeaderLabel(field, nameFields)}
                 {editing && editableSet.has(field) === false && canEdit && (
                   <span className="ml-1 text-[10px] text-[var(--text-muted)]">(нередактируемо)</span>
                 )}

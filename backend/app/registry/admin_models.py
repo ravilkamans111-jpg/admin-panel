@@ -295,7 +295,15 @@ register(
         model=MerchantBalance,
         verbose_name="Баланс мерчанта",
         verbose_name_plural="Балансы мерчантов",
-        list_display=_all_fields(MerchantBalance),
+        # Matches source MerchantBalanceAdmin.list_display order
+        # (merchant/currency columns right after id). Drops the two
+        # computed-only display methods (get_conversion_coefficients,
+        # available_balance_in_usdt) — not real columns here.
+        list_display=[
+            "id", "merchant_id", "currency_id", "balance", "balance_usdt", "insurance_balance_usdt",
+            "blocked_balance_in", "blocked_balance_out", "blocked_balance_usdt_in", "blocked_balance_usdt_out",
+            "settlement_commission",
+        ],
         list_filter=["merchant_id", "currency_id"],
         default_ordering=["-id"],
         editable_fields=[
@@ -541,7 +549,16 @@ register(
         model=CompanyBalance,
         verbose_name="Баланс компании",
         verbose_name_plural="Балансы компаний",
-        list_display=_all_fields(CompanyBalance),
+        # Matches source CompanyBalanceAdmin.list_display order (company/
+        # currency columns right after id). Drops the three computed-only
+        # display methods (get_conversion_coefficients,
+        # available_balance_in_usdt, our_balance_in_usdt,
+        # clients_founds_in_usdt) — not real columns here.
+        list_display=[
+            "id", "company_id", "currency_id", "blocked_balance_in", "blocked_balance_out",
+            "available_balance", "our_income", "clients_funds", "alert_balance_percent",
+            "insurance_balance", "settlement_commission",
+        ],
         list_filter=["company_id", "currency_id"],
         editable_fields=[
             "available_balance",

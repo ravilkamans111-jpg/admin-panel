@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { formatCellValue, formatDateMaybe, humanizeFieldName, looksLikeMoneyField } from "@/lib/format";
+import { fieldHeaderLabel, formatCellValue, formatDateMaybe, looksLikeMoneyField } from "@/lib/format";
 import { StatusBadge } from "./StatusBadge";
 
 interface DataTableProps {
@@ -16,6 +16,8 @@ interface DataTableProps {
   selected?: Set<number>;
   onToggleSelected?: (id: number) => void;
   onToggleSelectAll?: () => void;
+  /** FK columns whose header should read as a name, not "... Id" — see `nameEnrichedFields`. */
+  nameFields?: Set<string>;
 }
 
 export function DataTable({
@@ -28,6 +30,7 @@ export function DataTable({
   selected,
   onToggleSelected,
   onToggleSelectAll,
+  nameFields,
 }: DataTableProps) {
   const sortField = ordering?.startsWith("-") ? ordering.slice(1) : ordering;
   const sortDesc = ordering?.startsWith("-") ?? false;
@@ -56,7 +59,7 @@ export function DataTable({
                   onClick={() => onSort(col)}
                 >
                   <span className="inline-flex items-center gap-1">
-                    {humanizeFieldName(col)}
+                    {fieldHeaderLabel(col, nameFields ?? new Set())}
                     {active && <span>{sortDesc ? "↓" : "↑"}</span>}
                   </span>
                 </th>

@@ -6,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useSchema } from "@/lib/schema-context";
 import { AuthExpiredError, createSettlement, createRecord } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { humanizeFieldName } from "@/lib/format";
+import { fieldHeaderLabel, humanizeFieldName } from "@/lib/format";
 import { FkSelect } from "@/components/FkSelect";
 import type { AdminModelConfig } from "@/lib/types";
 
@@ -292,7 +292,7 @@ function GenericCreateForm({ config }: { config: AdminModelConfig }) {
           return (
             <div key={field}>
               <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
-                {humanizeFieldName(field)}
+                {targetKey ? fieldHeaderLabel(field, new Set([field])) : humanizeFieldName(field)}
               </label>
               {targetKey ? (
                 <FkSelect targetKey={targetKey} value={form[field] ?? ""} onChange={(v) => setField(field, v)} />

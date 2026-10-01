@@ -15,7 +15,7 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { DataTable } from "@/components/DataTable";
-import { humanizeFieldName } from "@/lib/format";
+import { humanizeFieldName, nameEnrichedFields } from "@/lib/format";
 
 const PAGE_SIZE = 25;
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
@@ -335,6 +335,7 @@ export default function AdminModelListPage() {
           selected={CALLBACK_KEYS.has(modelKey) ? selectedIds : undefined}
           onToggleSelected={CALLBACK_KEYS.has(modelKey) ? toggleSelected : undefined}
           onToggleSelectAll={CALLBACK_KEYS.has(modelKey) ? toggleSelectAll : undefined}
+          nameFields={nameEnrichedFields(config.fk_fields, modelKey, config.list_display)}
         />
       </div>
 
