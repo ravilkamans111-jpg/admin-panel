@@ -18,7 +18,7 @@ from enum import StrEnum
 
 import jwt
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from pydantic import BaseModel
 
 from app.core.config import get_auth_secrets
@@ -33,8 +33,34 @@ def hash_password(plain_password: str) -> str:
 def verify_password(plain_password: str, password_hash: str) -> bool:
     try:
         return _hasher.verify(password_hash, plain_password)
-    except VerifyMismatchError:
+    except (VerifyMismatchError, InvalidHashError):
         return False
+
+
+def password_needs_rehash(password_hash: str) -> bool:
+    return _hasher.check_needs_rehash(password_hash)
+
+
+# Verified against when the account doesn't exist, so a login attempt costs
+# the same time whether or not the email is registered (no user enumeration
+# by response timing).
+DUMMY_PASSWORD_HASH = _hasher.hash("dummy-password-for-timing-equalisation")
+
+
+class WeakPasswordError(ValueError):
+    pass
+
+
+def validate_password_strength(password: str, *, min_length: int, email: str | None = None) -> None:
+    if len(password) < min_length:
+        raise WeakPasswordError(f"Пароль должен быть не короче {min_length} символов")
+    if password.lower() in {"password", "password123", "qwerty123456", "1234567890ab"} or len(set(password)) < 5:
+        raise WeakPasswordError("Пароль слишком простой")
+    local_part = email.split("@")[0].lower() if email else ""
+    if len(local_part) >= 4 and local_part in password.lower():
+        raise WeakPasswordError("Пароль не должен содержать часть email")
+    if not (any(c.isalpha() for c in password) and any(c.isdigit() for c in password)):
+        raise WeakPasswordError("Пароль должен содержать буквы и цифры")
 
 
 class TokenScope(StrEnum):
@@ -48,6 +74,7 @@ class DecodedToken(BaseModel):
     scope: TokenScope
     brand_id: str | None = None
     role: str | None = None
+    ver: int = 0
     jti: str
 
 
@@ -78,10 +105,16 @@ def create_access_token(admin_user_id: int, brand_id: str, role: str) -> str:
     )
 
 
-def create_refresh_token(admin_user_id: int, brand_id: str, role: str) -> str:
+def create_refresh_token(admin_user_id: int, brand_id: str, role: str, token_version: int = 0) -> str:
     secrets = get_auth_secrets()
     return _encode(
-        {"sub": str(admin_user_id), "scope": TokenScope.REFRESH.value, "brand_id": brand_id, "role": role},
+        {
+            "sub": str(admin_user_id),
+            "scope": TokenScope.REFRESH.value,
+            "brand_id": brand_id,
+            "role": role,
+            "ver": token_version,
+        },
         timedelta(days=secrets.refresh_token_expire_days),
     )
 

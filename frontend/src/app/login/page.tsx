@@ -24,6 +24,8 @@ export default function LoginPage() {
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
         setError("Неверный email или пароль.");
+      } else if (err instanceof ApiError && err.status === 429) {
+        setError("Слишком много неудачных попыток. Повторите позже или обратитесь к администратору.");
       } else {
         setError("Что-то пошло не так. Попробуйте ещё раз.");
       }

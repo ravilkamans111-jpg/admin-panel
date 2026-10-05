@@ -3,10 +3,12 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSchema } from "@/lib/schema-context";
+import { useAuth } from "@/lib/auth-context";
 
 export function Sidebar() {
   const { groupedByApp, loading, error } = useSchema();
   const pathname = usePathname();
+  const { role } = useAuth();
 
   return (
     <nav className="w-64 shrink-0 overflow-y-auto border-r border-[var(--border)] px-3 py-4">
@@ -46,6 +48,22 @@ export function Sidebar() {
           </div>
         </div>
       ))}
+
+      {role === "superadmin" && (
+        <div className="mb-4">
+          <div className="mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
+            Администрирование
+          </div>
+          <Link
+            href="/staff"
+            className={`block rounded-md px-3 py-1.5 text-sm ${
+              pathname.startsWith("/staff") ? "bg-accent text-white" : "hover:bg-black/5 dark:hover:bg-white/5"
+            }`}
+          >
+            Сотрудники
+          </Link>
+        </div>
+      )}
     </nav>
   );
 }

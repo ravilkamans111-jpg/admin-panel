@@ -36,7 +36,6 @@ from app.models.tenant import (
     Merchant,
     MerchantBalance,
     MerchantPaymentMethod,
-    PaymentMethodCompany,
     Settlements,
     Transaction,
     UserConfig,

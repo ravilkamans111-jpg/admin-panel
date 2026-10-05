@@ -26,6 +26,7 @@ COPY --from=builder /opt/venv /opt/venv
 COPY app ./app
 COPY alembic_control_plane ./alembic_control_plane
 COPY alembic_control_plane.ini ./
+COPY scripts ./scripts
 
 USER app
 

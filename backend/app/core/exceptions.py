@@ -39,3 +39,19 @@ class RecordNotFoundError(DomainError):
 
 class InvalidFilterError(DomainError):
     """Запрошен фильтр/поле, не входящее в list_filter модели."""
+
+
+class AccountLockedError(DomainError):
+    """Слишком много неудачных попыток входа — вход временно заблокирован."""
+
+
+class DuplicateEmailError(DomainError):
+    """Сотрудник с таким email уже существует."""
+
+
+class LastSuperuserError(DomainError):
+    """Операция оставила бы систему без активного суперпользователя."""
+
+
+class SelfModificationError(DomainError):
+    """Нельзя деактивировать или разжаловать собственную учётную запись."""

@@ -11,16 +11,17 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_pre_auth_claims
+from app.api.deps import CurrentUser, get_current_user, get_pre_auth_claims
 from app.core.exceptions import (
     AccountInactiveError,
+    AccountLockedError,
     BrandAccessDeniedError,
     InvalidCredentialsError,
     InvalidTokenError,
     RecordNotFoundError,
     UnknownBrandError,
 )
-from app.core.security import DecodedToken
+from app.core.security import DecodedToken, WeakPasswordError
 from app.db.control_plane import get_control_plane_session
 from app.services import auth_service
 
@@ -58,6 +59,10 @@ async def login(
         )
     except InvalidCredentialsError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials") from exc
+    except AccountLockedError as exc:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS, "Слишком много неудачных попыток входа. Повторите позже."
+        ) from exc
 
     return LoginResponse(
         pre_auth_token=result.pre_auth_token,
@@ -131,10 +136,49 @@ async def refresh(
     )
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@router.post("/change-password", response_model=TokenPairResponse)
+async def change_password(
+    body: ChangePasswordRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(get_current_user),
+    session: AsyncSession = Depends(get_control_plane_session),
+) -> TokenPairResponse:
+    try:
+        result = await auth_service.change_password(
+            session,
+            admin_user_id=current_user.admin_user_id,
+            brand_id=current_user.brand_id,
+            current_password=body.current_password,
+            new_password=body.new_password,
+            ip_address=request.client.host if request.client else None,
+        )
+    except InvalidCredentialsError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Текущий пароль указан неверно") from exc
+    except WeakPasswordError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except AccountInactiveError as exc:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer active") from exc
+    except BrandAccessDeniedError as exc:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Brand access revoked") from exc
+
+    return TokenPairResponse(
+        access_token=result.access_token,
+        refresh_token=result.refresh_token,
+        brand_id=result.brand_id,
+        role=result.role,
+    )
+
+
 class MeResponse(BaseModel):
     admin_user_id: int
     email: str
     full_name: str
+    is_superuser: bool
 
 
 @router.get("/me", response_model=MeResponse)
@@ -147,4 +191,9 @@ async def me(
     except RecordNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found") from exc
 
-    return MeResponse(admin_user_id=result.admin_user_id, email=result.email, full_name=result.full_name)
+    return MeResponse(
+        admin_user_id=result.admin_user_id,
+        email=result.email,
+        full_name=result.full_name,
+        is_superuser=result.is_superuser,
+    )

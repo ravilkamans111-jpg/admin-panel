@@ -174,6 +174,17 @@ def get_brand_celery_config(brand_id: str) -> BrandCeleryConfig:
     return BrandCeleryConfig(brand_id=brand_id, broker_url=broker_url, result_backend=result_backend)
 
 
+MIN_JWT_SECRET_LENGTH = 32
+
+
+def _validated_jwt_secret(secret: str) -> str:
+    if len(secret) < MIN_JWT_SECRET_LENGTH or any(w in secret.lower() for w in ("change-me", "dev-only", "changeme")):
+        raise RuntimeError(
+            f"JWT signing key must be at least {MIN_JWT_SECRET_LENGTH} random characters and not a placeholder"
+        )
+    return secret
+
+
 @functools.lru_cache
 def get_auth_secrets() -> AuthSecrets:
     if env_settings.use_local_env_secrets:
@@ -185,7 +196,7 @@ def get_auth_secrets() -> AuthSecrets:
         )
     vault = get_vault_client()
     return AuthSecrets(
-        jwt_secret_key=vault.get_required(ADMIN_PANEL_MOUNT, "auth", "jwt_secret_key"),
+        jwt_secret_key=_validated_jwt_secret(vault.get_required(ADMIN_PANEL_MOUNT, "auth", "jwt_secret_key")),
         jwt_algorithm=vault.get_optional(ADMIN_PANEL_MOUNT, "auth", "jwt_algorithm", "HS256") or "HS256",
         access_token_expire_minutes=int(
             vault.get_optional(ADMIN_PANEL_MOUNT, "auth", "access_token_expire_minutes", "15") or 15

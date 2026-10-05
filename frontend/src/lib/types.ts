@@ -20,6 +20,18 @@ export interface MeResponse {
   admin_user_id: string;
   email: string;
   full_name: string;
+  is_superuser: boolean;
+}
+
+export interface StaffUser {
+  id: number;
+  email: string;
+  full_name: string;
+  is_active: boolean;
+  is_superuser: boolean;
+  locked: boolean;
+  last_login_at: string | null;
+  brand_access: Record<string, string>;
 }
 
 export interface AdminModelConfig {

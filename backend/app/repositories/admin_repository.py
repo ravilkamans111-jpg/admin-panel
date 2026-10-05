@@ -208,7 +208,9 @@ async def _enrich_fk_labels(
     2 hops — deep enough for every real template in the registry, and a
     guard against a future fk_fields cycle turning into infinite recursion.
     """
-    from app.registry.admin_models import get_config  # local import: registry sits below repositories in the layering
+    from app.registry.admin_models import (
+        get_config,  # local import: registry sits below repositories in the layering
+    )
 
     for field_name, target_key in config.fk_fields.items():
         ids = {row[field_name] for row in rows if row.get(field_name) is not None}

@@ -37,6 +37,14 @@ class AdminUser(ControlPlaneBase):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Bumped on password change/reset and deactivation; refresh tokens carry
+    # the value they were issued under, so bumping revokes every outstanding
+    # session of that user at its next refresh.
+    token_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     brand_access: Mapped[list[BrandAccess]] = relationship(back_populates="admin_user")
 
@@ -48,7 +56,13 @@ class BrandAccess(ControlPlaneBase):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     admin_user_id: Mapped[int] = mapped_column(ForeignKey("admin_user.id", ondelete="CASCADE"))
     brand_id: Mapped[str] = mapped_column(String(64))
-    role: Mapped[BrandRole] = mapped_column(Enum(BrandRole), default=BrandRole.VIEWER)
+    # values_callable: persist the lowercase *values* ("operator"), which is what
+    # the Postgres enum created by migration 0001 contains — SQLAlchemy's default
+    # would send the member NAMES ("OPERATOR") and Postgres rejects them.
+    role: Mapped[BrandRole] = mapped_column(
+        Enum(BrandRole, values_callable=lambda e: [m.value for m in e], name="brandrole"),
+        default=BrandRole.VIEWER,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     admin_user: Mapped[AdminUser] = relationship(back_populates="brand_access")
@@ -63,17 +77,16 @@ class AuditLog(ControlPlaneBase):
     logging every list/detail read on a payments admin is worth doing
     before write actions land, but adds volume that isn't justified yet.
 
-    `admin_user_id` is deliberately NOT a foreign key (see migration 0002).
-    Every write action in the service logs here with the acting
-    `CurrentUser.admin_user_id` — including `HARDCODED_SUPERUSER_ID`
-    (`app.services.auth_service`), which by design never has a matching
-    `admin_user` row. A FK would reject every one of those writes.
+    `admin_user_id` is nullable with ON DELETE SET NULL: the trail outlives
+    the staff account that produced it.
     """
 
     __tablename__ = "audit_log"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    admin_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    admin_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("admin_user.id", ondelete="SET NULL"), nullable=True
+    )
     brand_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     action: Mapped[str] = mapped_column(String(64))  # e.g. "login", "select_brand", "access_denied"
     detail: Mapped[dict] = mapped_column(JSON, default=dict)

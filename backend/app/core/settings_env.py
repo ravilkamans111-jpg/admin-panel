@@ -26,22 +26,14 @@ class EnvSettings(BaseSettings):
 
     # Control-plane DB (staff auth / brand registry / audit log) connection.
     # Sourced from env even in prod, since it is needed to bootstrap Vault-based
-    # config resolution for everything else (chicken-and-egg: the control-plane
-    # DB itself isn't a "brand" secret). Treat it as infra config, not a brand secret.
-    control_plane_database_url: str = (
-        "postgresql+asyncpg://admin_panel:admin_panel@localhost:5442/admin_panel_control"
-    )
+    # config resolution for everything else. No default: a missing value must
+    # fail startup rather than silently pointing at a development database.
+    control_plane_database_url: str
 
-    # Single hardcoded superuser, checked in `auth_service.login` before ever
-    # touching the control-plane DB — no `admin_user` row needs to exist for
-    # this identity (see `HARDCODED_SUPERUSER_ID`). Deliberate simplification:
-    # there is currently exactly one operator of this service, so seeding/
-    # maintaining a DB-backed account for them is pure ceremony. Real
-    # DB-backed accounts (`bootstrap_admin_user.py`, `AdminUser`/`BrandAccess`)
-    # still work unchanged for anyone else added later. Override both in
-    # production — these defaults are for local dev only.
-    hardcoded_superuser_email: str = "admin@example.com"
-    hardcoded_superuser_password: str = "SuperSecret123!"
+    # Staff login policy.
+    login_max_failed_attempts: int = 5
+    login_lockout_minutes: int = 15
+    min_password_length: int = 12
 
     cors_allow_origins: str = "http://localhost:3000"
 

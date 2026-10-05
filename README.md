@@ -82,8 +82,8 @@ its own project phase, not a follow-up PR.
 ```
 backend/    FastAPI service (see backend/README below via `app/` docstrings)
 frontend/   Next.js admin UI (workspace switcher, generic tables, dashboard)
-scripts/    seed_tenant_db.py (throwaway local Postgres schema+data),
-            bootstrap_admin_user.py (create the first superuser)
+scripts/    seed_tenant_db.py (throwaway local Postgres schema+data)
+backend/scripts/  bootstrap_admin_user.py (create the first superuser)
 docker-compose.yml   full local stack: control-plane PG, 3 tenant PGs,
                       Vault (dev mode), backend, frontend
 ```
@@ -101,7 +101,7 @@ uv venv && uv pip install -e ".[dev]"
 # KV-v2 paths), then:
 uv run alembic -c alembic_control_plane.ini upgrade head
 uv run python ../scripts/seed_tenant_db.py ampay
-uv run python ../scripts/bootstrap_admin_user.py you@example.com 'a-strong-password'
+uv run python scripts/bootstrap_admin_user.py you@example.com   # prompts for a password (12+ chars, letters+digits)
 uv run uvicorn app.main:app --reload
 ```
 
@@ -116,6 +116,27 @@ cd backend && uv run pytest
 ```
 
 Frontend: see `frontend/README.md`.
+
+## Authentication
+
+Staff accounts exist only in the control-plane DB (`admin_user`,
+`brand_access`) — there are no built-in credentials anywhere in code or
+config. The first superuser is created with `backend/scripts/bootstrap_admin_user.py`
+(also available in the container: `docker compose exec backend python
+scripts/bootstrap_admin_user.py you@company.com`); everyone else is managed by
+a superuser under **Сотрудники** in the UI (`/staff/*` API).
+
+- Argon2 password hashes (transparently re-hashed on login if parameters
+  change); password policy: 12+ chars, letters and digits.
+- Account lockout: 5 failed attempts locks the account for 15 minutes
+  (`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCKOUT_MINUTES`); superuser can unlock.
+- Login timing is equalised for unknown emails (no user enumeration).
+- Changing/resetting a password or deactivating a user bumps `token_version`,
+  revoking that user's refresh tokens; access tokens live 15 minutes.
+- Staff-management calls re-check the DB (active superuser), not just the JWT.
+- Every login, failure, lockout and staff change is written to `audit_log`.
+- In deployed environments `USE_LOCAL_ENV_SECRETS` must be false: the JWT key
+  comes from Vault and is rejected if shorter than 32 chars or a placeholder.
 
 ## What was verified in this build
 

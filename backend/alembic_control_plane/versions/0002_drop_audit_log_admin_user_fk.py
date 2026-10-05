@@ -1,6 +1,6 @@
 """drop FK on audit_log.admin_user_id
 
-The hardcoded superuser (`app.services.auth_service.HARDCODED_SUPERUSER_ID`)
+The (since removed) hardcoded superuser sentinel id
 never has a matching `admin_user` row by design — every write action logs
 to `audit_log` with the acting user's id, so a FK here would reject every
 audit write made while authenticated as that identity. `admin_user_id`
