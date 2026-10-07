@@ -6,7 +6,7 @@ import { ApiError, selectBrand } from "@/lib/api";
 import { localStore, sessionStore, STORAGE_KEYS } from "@/lib/storage";
 import type { AvailableBrand } from "@/lib/types";
 import { useAuth } from "@/lib/auth-context";
-import { roleLabel } from "@/lib/format";
+import { brandName, roleLabel } from "@/lib/format";
 
 export default function SelectBrandPage() {
   const router = useRouter();
@@ -82,7 +82,7 @@ export default function SelectBrandPage() {
               className="card flex w-full items-center justify-between px-4 py-3 text-left hover:border-accent disabled:opacity-60"
             >
               <div>
-                <div className="font-medium">{b.display_name}</div>
+                <div className="font-medium tracking-wide">{brandName(b.display_name)}</div>
                 <div className="text-xs text-[var(--text-muted)]">{roleLabel(b.role)}</div>
               </div>
               <span className="text-sm text-[var(--text-muted)]">

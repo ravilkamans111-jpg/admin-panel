@@ -3,7 +3,7 @@
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
-import { roleLabel } from "@/lib/format";
+import { brandName, roleLabel } from "@/lib/format";
 
 export function WorkspaceSwitcher() {
   const { brandId, availableBrands, switchBrand, hasPreAuth } = useAuth();
@@ -14,7 +14,7 @@ export function WorkspaceSwitcher() {
   const containerRef = useRef<HTMLDivElement>(null);
 
   const current = availableBrands.find((b) => b.brand_id === brandId);
-  const label = current?.display_name || brandId || "Рабочее пространство";
+  const label = brandName(current?.display_name || brandId || "Рабочее пространство");
 
   async function handlePick(id: string) {
     if (id === brandId) {
@@ -70,7 +70,7 @@ export function WorkspaceSwitcher() {
                 className="flex w-full items-center justify-between rounded-md px-2 py-1.5 text-left text-sm hover:bg-black/5 dark:hover:bg-white/5 disabled:opacity-60"
               >
                 <span>
-                  {b.display_name}
+                  {brandName(b.display_name)}
                   <span className="ml-1 text-xs text-[var(--text-muted)]">({roleLabel(b.role)})</span>
                 </span>
                 {b.brand_id === brandId && <span className="text-accent">✓</span>}

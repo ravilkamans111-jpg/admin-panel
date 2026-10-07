@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { AuthExpiredError, fetchDashboardSummary } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { statusLabel } from "@/lib/format";
+import { brandName, statusLabel } from "@/lib/format";
 import type { DashboardSummary } from "@/lib/types";
 
 const STATUS_COLORS: Record<string, string> = {
@@ -77,7 +77,7 @@ export default function DashboardPage() {
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <StatCard label="Всего мерчантов" value={summary.total_merchants.toLocaleString("ru-RU")} />
         <StatCard label="Всего транзакций" value={summary.total_transactions.toLocaleString("ru-RU")} />
-        <StatCard label="Бренд" value={summary.brand_id} />
+        <StatCard label="Бренд" value={brandName(summary.brand_id)} />
       </div>
 
       <div className="card p-5">

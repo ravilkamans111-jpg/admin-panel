@@ -1,3 +1,8 @@
+/** Brand names are shown in capitals everywhere in the UI (AMPAY, RAJAPAY, QUIET-FOREST). */
+export function brandName(name: string): string {
+  return name.toUpperCase();
+}
+
 const ROLE_LABELS_RU: Record<string, string> = {
   viewer: "наблюдатель",
   operator: "оператор",
