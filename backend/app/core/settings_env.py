@@ -19,10 +19,14 @@ class EnvSettings(BaseSettings):
     # (default) in any deployed environment.
     use_local_env_secrets: bool = False
 
+    # Same variables as the monoliths' core/vault_loader.py.
     vault_addr: str | None = None
-    vault_token: str | None = None
-    vault_role_id: str | None = None
-    vault_secret_id: str | None = None
+    vault_username: str | None = None
+    vault_password: str | None = None
+    vault_token: str | None = None  # optional alternative to username/password
+    vault_mount: str = "backend"
+    # Optional: where THIS service's own secrets (JWT key) live; defaults to vault_mount.
+    vault_mount_admin_panel: str | None = None
 
     # Control-plane DB (staff auth / brand registry / audit log) connection.
     # Sourced from env even in prod, since it is needed to bootstrap Vault-based

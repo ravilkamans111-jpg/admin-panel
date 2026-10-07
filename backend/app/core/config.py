@@ -2,24 +2,33 @@
 
 Two providers, selected by `EnvSettings.use_local_env_secrets`:
 
-- Vault (default, required outside local dev): each brand's DB credentials
-  live at KV path `brand-config/data/<brand_id>/db`; global service secrets
-  (JWT signing key, control-plane admin bootstrap) live at
-  `admin-panel/data/auth`. Deliberately namespaced by brand_id as a *path*
-  segment (not a suffixed key like `DB_PASSWORD_RAJAPAY`) — the migration
-  research on the three source monoliths found real cross-brand leakage
-  caused by exactly that suffixed-key convention (e.g. RajaPay's settings.py
-  hardcoding `AMPAY_EMAIL = COMPANY_EMAIL`, silently returning RajaPay's own
-  value under AmPay's name). Path-segmented secrets make that class of bug
-  structurally impossible: there is no shared namespace to alias into.
+- Vault (default, required outside local dev) — laid out like the three
+  monoliths' `core/vault_loader.py`: log in with VAULT_USERNAME/VAULT_PASSWORD
+  (userpass) or VAULT_TOKEN, read the KV-v2 mount VAULT_MOUNT (default
+  "backend") paths `api_keys`, `settings`, `urls`, and look values up by the
+  monoliths' own key names. A key is tried brand-suffixed first and then plain,
+  so both naming styles work from one place:
+
+      what we need          keys tried (brand AMPAY shown)
+      DB host               HOST_AMPAY, DB_HOST_AMPAY, HOST, DB_HOST
+      DB port / name        DB_PORT[_AMPAY] (default 5432), POSTGRES_DB[_AMPAY]
+      DB user / password    POSTGRES_USER[_AMPAY], POSTGRES_PASSWORD[_AMPAY]
+      Redis                 REDIS_URL, or REDIS_HOST + REDIS_PORT + REDIS_DB [_AMPAY]
+      Celery broker         CELERY_BROKER_URL[_AMPAY], CELERY_RESULT_BACKEND[_AMPAY]
+      admin public key      ADMIN_PUBLIC_KEY[_AMPAY]
+      timezone              APP_TIMEZONE[_AMPAY]           (default UTC)
+      bot callback URL      BOT_CALLBACK_URL[_AMPAY]       (optional)
+      JWT (this service)    JWT_SECRET_KEY, JWT_ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
+                            REFRESH_TOKEN_EXPIRE_DAYS      (path `admin_panel` or `settings`)
+
+  Brand suffixes: AMPAY, RAJAPAY, QUIET_FOREST. A brand with its own mount sets
+  `VAULT_MOUNT_<BRAND>`.
 
 - Local env (.env), for development only: `BRAND_<BRAND_ID>_DB_*` variables.
 
 No hardcoded fallback secrets exist anywhere in this module by design: a
 missing required secret raises and the service fails to start, rather than
-silently running with a weak default (see VaultConfigError in app.core.vault
-and the migration reports flagging exactly this failure mode in the source
-Django settings.py files).
+silently running with a weak default.
 """
 
 from __future__ import annotations
@@ -31,8 +40,40 @@ from dataclasses import dataclass
 from app.core.settings_env import env_settings
 from app.core.vault import VaultConfigError, get_vault_client
 
-BRAND_CONFIG_MOUNT = "brand-config"
-ADMIN_PANEL_MOUNT = "admin-panel"
+
+def _brand_key(brand_id: str) -> str:
+    return brand_id.upper().replace("-", "_")
+
+
+def _brand_vault_data(brand_id: str) -> dict:
+    """The brand's merged Vault secrets (`api_keys` + `settings` + `urls`).
+
+    One shared mount (`VAULT_MOUNT`, default "backend") by default; if a brand
+    keeps its own mount — as each monolith does — set `VAULT_MOUNT_<BRAND>`
+    (e.g. `VAULT_MOUNT_QUIET_FOREST`)."""
+    mount = os.environ.get(f"VAULT_MOUNT_{_brand_key(brand_id)}") or env_settings.vault_mount
+    return get_vault_client().read_merged(mount)
+
+
+def _pick(data: dict, brand_id: str, *names: str, default: str | None = None) -> str | None:
+    """First non-empty value for any of `names`, trying the brand-suffixed key
+    first (`HOST_AMPAY` — AmPay/RajaPay style) and then the plain key (`DB_HOST`
+    — quiet-forest style), so the key names of all three monoliths just work."""
+    suffix = _brand_key(brand_id)
+    for key in [f"{n}_{suffix}" for n in names] + list(names):
+        value = data.get(key)
+        if value not in (None, ""):
+            return str(value)
+    return default
+
+
+def _require(value: str | None, brand_id: str, *names: str) -> str:
+    if value is None:
+        raise VaultConfigError(
+            f"Vault has no value for {brand_id}: expected one of "
+            f"{', '.join(f'{n}_{_brand_key(brand_id)}' for n in names)} or {', '.join(names)}."
+        )
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,21 +148,14 @@ def get_brand_db_config(brand_id: str) -> BrandDbConfig:
             user=_require_env(f"BRAND_{brand_key}_DB_USER"),
             password=_require_env(f"BRAND_{brand_key}_DB_PASSWORD"),
         )
-    vault = get_vault_client()
-    data = vault.read_kv(BRAND_CONFIG_MOUNT, f"{brand_id}/db")
-    required = ("host", "port", "database", "user", "password")
-    missing = [k for k in required if k not in data or data[k] in (None, "")]
-    if missing:
-        raise VaultConfigError(
-            f"Vault secret {BRAND_CONFIG_MOUNT}/{brand_id}/db missing keys: {missing}"
-        )
+    data = _brand_vault_data(brand_id)
     return BrandDbConfig(
         brand_id=brand_id,
-        host=str(data["host"]),
-        port=int(data["port"]),
-        database=str(data["database"]),
-        user=str(data["user"]),
-        password=str(data["password"]),
+        host=_require(_pick(data, brand_id, "HOST", "DB_HOST"), brand_id, "HOST", "DB_HOST"),
+        port=int(_pick(data, brand_id, "DB_PORT", default="5432") or 5432),
+        database=_require(_pick(data, brand_id, "POSTGRES_DB"), brand_id, "POSTGRES_DB"),
+        user=_require(_pick(data, brand_id, "POSTGRES_USER"), brand_id, "POSTGRES_USER"),
+        password=_require(_pick(data, brand_id, "POSTGRES_PASSWORD"), brand_id, "POSTGRES_PASSWORD"),
     )
 
 
@@ -133,8 +167,7 @@ def get_brand_admin_public_key(brand_id: str) -> str | None:
     brand_key = brand_id.upper().replace("-", "_")
     if env_settings.use_local_env_secrets:
         return os.environ.get(f"BRAND_{brand_key}_ADMIN_PUBLIC_KEY")
-    vault = get_vault_client()
-    return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/transaction_admin", "admin_public_key")
+    return _pick(_brand_vault_data(brand_id), brand_id, "ADMIN_PUBLIC_KEY")
 
 
 def get_brand_timezone(brand_id: str) -> str:
@@ -144,8 +177,7 @@ def get_brand_timezone(brand_id: str) -> str:
     brand_key = brand_id.upper().replace("-", "_")
     if env_settings.use_local_env_secrets:
         return os.environ.get(f"BRAND_{brand_key}_TIMEZONE", "UTC")
-    vault = get_vault_client()
-    return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/transaction_admin", "timezone") or "UTC"
+    return _pick(_brand_vault_data(brand_id), brand_id, "APP_TIMEZONE", default="UTC") or "UTC"
 
 
 def get_brand_bot_callback_url(brand_id: str) -> str | None:
@@ -158,16 +190,23 @@ def get_brand_bot_callback_url(brand_id: str) -> str | None:
     brand_key = brand_id.upper().replace("-", "_")
     if env_settings.use_local_env_secrets:
         return os.environ.get(f"BRAND_{brand_key}_BOT_CALLBACK_URL")
-    vault = get_vault_client()
-    return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/callbacks", "bot_callback_url")
+    return _pick(_brand_vault_data(brand_id), brand_id, "BOT_CALLBACK_URL")
 
 
 def get_brand_redis_config(brand_id: str) -> BrandRedisConfig:
     brand_key = brand_id.upper().replace("-", "_")
     if env_settings.use_local_env_secrets:
         return BrandRedisConfig(brand_id=brand_id, url=_require_env(f"BRAND_{brand_key}_REDIS_URL"))
-    vault = get_vault_client()
-    url = vault.get_required(BRAND_CONFIG_MOUNT, f"{brand_id}/redis", "url")
+    data = _brand_vault_data(brand_id)
+    url = _pick(data, brand_id, "REDIS_URL")
+    if url is None:
+        host = _require(_pick(data, brand_id, "REDIS_HOST"), brand_id, "REDIS_HOST", "REDIS_URL")
+        if "://" in host:
+            url = host
+        else:
+            port = _pick(data, brand_id, "REDIS_PORT", default="6379")
+            db = _pick(data, brand_id, "REDIS_DB", default="0")
+            url = f"redis://{host}:{port}/{db}"
     return BrandRedisConfig(brand_id=brand_id, url=url)
 
 
@@ -179,10 +218,12 @@ def get_brand_celery_config(brand_id: str) -> BrandCeleryConfig:
             broker_url=_require_env(f"BRAND_{brand_key}_CELERY_BROKER_URL"),
             result_backend=os.environ.get(f"BRAND_{brand_key}_CELERY_RESULT_BACKEND"),
         )
-    vault = get_vault_client()
-    broker_url = vault.get_required(BRAND_CONFIG_MOUNT, f"{brand_id}/celery", "broker_url")
-    result_backend = vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/celery", "result_backend")
-    return BrandCeleryConfig(brand_id=brand_id, broker_url=broker_url, result_backend=result_backend)
+    data = _brand_vault_data(brand_id)
+    return BrandCeleryConfig(
+        brand_id=brand_id,
+        broker_url=_require(_pick(data, brand_id, "CELERY_BROKER_URL"), brand_id, "CELERY_BROKER_URL"),
+        result_backend=_pick(data, brand_id, "CELERY_RESULT_BACKEND"),
+    )
 
 
 MIN_JWT_SECRET_LENGTH = 32
@@ -205,14 +246,13 @@ def get_auth_secrets() -> AuthSecrets:
             access_token_expire_minutes=int(os.environ.get("ACCESS_TOKEN_EXPIRE_MINUTES", "15")),
             refresh_token_expire_days=int(os.environ.get("REFRESH_TOKEN_EXPIRE_DAYS", "7")),
         )
-    vault = get_vault_client()
+    data = get_vault_client().read_merged(env_settings.vault_mount_admin_panel or env_settings.vault_mount)
+    secret = data.get("JWT_SECRET_KEY")
+    if secret in (None, ""):
+        raise VaultConfigError("Vault has no JWT_SECRET_KEY (put it in the `admin_panel` or `settings` path).")
     return AuthSecrets(
-        jwt_secret_key=_validated_jwt_secret(vault.get_required(ADMIN_PANEL_MOUNT, "auth", "jwt_secret_key")),
-        jwt_algorithm=vault.get_optional(ADMIN_PANEL_MOUNT, "auth", "jwt_algorithm", "HS256") or "HS256",
-        access_token_expire_minutes=int(
-            vault.get_optional(ADMIN_PANEL_MOUNT, "auth", "access_token_expire_minutes", "15") or 15
-        ),
-        refresh_token_expire_days=int(
-            vault.get_optional(ADMIN_PANEL_MOUNT, "auth", "refresh_token_expire_days", "7") or 7
-        ),
+        jwt_secret_key=_validated_jwt_secret(str(secret)),
+        jwt_algorithm=str(data.get("JWT_ALGORITHM") or "HS256"),
+        access_token_expire_minutes=int(data.get("ACCESS_TOKEN_EXPIRE_MINUTES") or 15),
+        refresh_token_expire_days=int(data.get("REFRESH_TOKEN_EXPIRE_DAYS") or 7),
     )

@@ -145,6 +145,12 @@ a superuser under **Сотрудники** in the UI (`/staff/*` API).
 - Every login, failure, lockout and staff change is written to `audit_log`.
 - In deployed environments `USE_LOCAL_ENV_SECRETS` must be false: the JWT key
   comes from Vault and is rejected if shorter than 32 chars or a placeholder.
+- Vault is wired like the monoliths' `vault_loader.py`: `VAULT_ADDR`,
+  `VAULT_USERNAME`/`VAULT_PASSWORD` (userpass; or `VAULT_TOKEN`), `VAULT_MOUNT`
+  (default `backend`), KV-v2 paths `settings`/`urls`/`api_keys` with the
+  monoliths' own key names — brand-suffixed (`HOST_AMPAY`) or plain (`DB_HOST`).
+  Verified end-to-end against a dev Vault: all three brands load their DB/Redis/
+  Celery config from it. The key table is in `backend/app/core/config.py`.
 
 ## What was verified in this build
 
