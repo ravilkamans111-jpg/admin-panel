@@ -14,21 +14,24 @@ version: "3.9"
 # beyond local dev.
 
 services:
-  control_plane_db:
-    image: postgres:16
-    environment:
-      POSTGRES_DB: admin_panel_control
-      POSTGRES_USER: admin_panel
-      POSTGRES_PASSWORD: admin_panel
-    ports:
-      - "5442:5432"
-    volumes:
-      - control_plane_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U admin_panel -d admin_panel_control"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
+  # control_plane_db — disabled: staff log in with each brand's own Django `auth_user`, so
+  # there is no database of ours. Re-enable together with backend/disabled/control_plane.
+  #
+  # control_plane_db:
+  #   image: postgres:16
+  #   environment:
+  #     POSTGRES_DB: admin_panel_control
+  #     POSTGRES_USER: admin_panel
+  #     POSTGRES_PASSWORD: admin_panel
+  #   ports:
+  #     - "5442:5432"
+  #   volumes:
+  #     - control_plane_db_data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U admin_panel -d admin_panel_control"]
+  #     interval: 3s
+  #     timeout: 3s
+  #     retries: 20
 
   ampay_db:
     image: postgres:16
@@ -84,23 +87,22 @@ services:
       # machines where 6379 is already taken; containers always reach it as redis:6379.
       - "${REDIS_HOST_PORT:-6379}:6379"
 
-  # One-shot control-plane schema migration; the backend only starts after it
-  # succeeds, so a deploy can never run new code against the old schema.
-  migrate:
-    build: ./backend
-    command: ["alembic", "-c", "alembic_control_plane.ini", "upgrade", "head"]
-    env_file: ./backend/.env
-    environment:
-      CONTROL_PLANE_DATABASE_URL: postgresql+asyncpg://admin_panel:admin_panel@control_plane_db:5432/admin_panel_control
-    depends_on:
-      control_plane_db:
-        condition: service_healthy
+  # # One-shot control-plane schema migration; the backend only starts after it
+  # # succeeds, so a deploy can never run new code against the old schema.
+  # migrate:
+  #   build: ./backend
+  #   command: ["alembic", "-c", "alembic_control_plane.ini", "upgrade", "head"]
+  #   env_file: ./backend/.env
+  #   environment:
+  #     CONTROL_PLANE_DATABASE_URL: postgresql+asyncpg://admin_panel:admin_panel@control_plane_db:5432/admin_panel_control
+  #   depends_on:
+  #     control_plane_db:
+  #       condition: service_healthy
 
   backend:
     build: ./backend
     env_file: ./backend/.env
     environment:
-      CONTROL_PLANE_DATABASE_URL: postgresql+asyncpg://admin_panel:admin_panel@control_plane_db:5432/admin_panel_control
       # Pointed at the user's own real local dev/test Postgres containers
       # (db_test / db_dev_rajapay / db_test_qf, run separately, not part of
       # this compose file) via host.docker.internal — these hold real
@@ -142,8 +144,6 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
-      migrate:
-        condition: service_completed_successfully
       redis:
         condition: service_started
     ports:
@@ -159,7 +159,7 @@ services:
       - "3000:3000"
 
 volumes:
-  control_plane_db_data:
+  # control_plane_db_data:  # disabled with control_plane_db
   ampay_db_data:
   rajapay_db_data:
   quiet_forest_db_data:

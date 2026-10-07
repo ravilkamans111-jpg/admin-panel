@@ -8,7 +8,6 @@ import type {
   MeResponse,
   OptionItem,
   SelectBrandResponse,
-  StaffUser,
 } from "./types";
 
 export const API_BASE_URL =
@@ -113,8 +112,8 @@ export async function tryRefresh(): Promise<SelectBrandResponse | null> {
 // Auth endpoints (unauthenticated / pre-auth token based)
 // ---------------------------------------------------------------------------
 
-export async function login(email: string, password: string): Promise<LoginResponse> {
-  const res = await rawFetch("/auth/login", { method: "POST", body: { email, password } });
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  const res = await rawFetch("/auth/login", { method: "POST", body: { username, password } });
   if (!res.ok) {
     const message = await parseErrorBody(res);
     throw new ApiError(res.status, message);
@@ -466,61 +465,63 @@ export function sendSettlementCallbacks(settlementIds: number[]): Promise<Callba
   });
 }
 
-// ---------------------------------------------------------------------------
-// Account + staff management (control-plane DB). Staff endpoints are
-// superadmin-only server-side; the UI just hides the entry point otherwise.
-// ---------------------------------------------------------------------------
-
-/** Changes the caller's password; the server revokes every other session and
- * returns a fresh token pair that replaces the stored one. */
-export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
-  const data = await authedFetch<SelectBrandResponse>("/auth/change-password", {
-    method: "POST",
-    body: { current_password: currentPassword, new_password: newPassword },
-  });
-  localStore.set(STORAGE_KEYS.accessToken, data.access_token);
-  localStore.set(STORAGE_KEYS.refreshToken, data.refresh_token);
-}
-
-export function listStaff(): Promise<StaffUser[]> {
-  return authedFetch<StaffUser[]>("/staff/users");
-}
-
-export function createStaff(values: {
-  email: string;
-  full_name: string;
-  password: string;
-  is_superuser: boolean;
-  brand_access: Record<string, string>;
-}): Promise<StaffUser> {
-  return authedFetch<StaffUser>("/staff/users", { method: "POST", body: values });
-}
-
-export function updateStaff(
-  id: number,
-  values: { full_name?: string; is_active?: boolean; is_superuser?: boolean }
-): Promise<StaffUser> {
-  return authedFetch<StaffUser>(`/staff/users/${id}`, { method: "PATCH", body: values });
-}
-
-export function resetStaffPassword(id: number, newPassword: string): Promise<void> {
-  return authedFetch<void>(`/staff/users/${id}/reset-password`, {
-    method: "POST",
-    body: { new_password: newPassword },
-  });
-}
-
-export function unlockStaff(id: number): Promise<void> {
-  return authedFetch<void>(`/staff/users/${id}/unlock`, { method: "POST" });
-}
-
-/** `role: null` revokes access to the brand. */
-export function setStaffBrandAccess(id: number, brandId: string, role: string | null): Promise<StaffUser> {
-  return authedFetch<StaffUser>(`/staff/users/${id}/brand-access/${brandId}`, {
-    method: "PUT",
-    body: { role },
-  });
-}
+// DISABLED — staff management / password change (control-plane auth). See
+// backend/disabled/control_plane/README.md and frontend/disabled/staff-management/.
+// // ---------------------------------------------------------------------------
+// // Account + staff management (control-plane DB). Staff endpoints are
+// // superadmin-only server-side; the UI just hides the entry point otherwise.
+// // ---------------------------------------------------------------------------
+//
+// /** Changes the caller's password; the server revokes every other session and
+//  * returns a fresh token pair that replaces the stored one. */
+// export async function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+//   const data = await authedFetch<SelectBrandResponse>("/auth/change-password", {
+//     method: "POST",
+//     body: { current_password: currentPassword, new_password: newPassword },
+//   });
+//   localStore.set(STORAGE_KEYS.accessToken, data.access_token);
+//   localStore.set(STORAGE_KEYS.refreshToken, data.refresh_token);
+// }
+//
+// export function listStaff(): Promise<StaffUser[]> {
+//   return authedFetch<StaffUser[]>("/staff/users");
+// }
+//
+// export function createStaff(values: {
+//   email: string;
+//   full_name: string;
+//   password: string;
+//   is_superuser: boolean;
+//   brand_access: Record<string, string>;
+// }): Promise<StaffUser> {
+//   return authedFetch<StaffUser>("/staff/users", { method: "POST", body: values });
+// }
+//
+// export function updateStaff(
+//   id: number,
+//   values: { full_name?: string; is_active?: boolean; is_superuser?: boolean }
+// ): Promise<StaffUser> {
+//   return authedFetch<StaffUser>(`/staff/users/${id}`, { method: "PATCH", body: values });
+// }
+//
+// export function resetStaffPassword(id: number, newPassword: string): Promise<void> {
+//   return authedFetch<void>(`/staff/users/${id}/reset-password`, {
+//     method: "POST",
+//     body: { new_password: newPassword },
+//   });
+// }
+//
+// export function unlockStaff(id: number): Promise<void> {
+//   return authedFetch<void>(`/staff/users/${id}/unlock`, { method: "POST" });
+// }
+//
+// /** `role: null` revokes access to the brand. */
+// export function setStaffBrandAccess(id: number, brandId: string, role: string | null): Promise<StaffUser> {
+//   return authedFetch<StaffUser>(`/staff/users/${id}/brand-access/${brandId}`, {
+//     method: "PUT",
+//     body: { role },
+//   });
+// }
 
 // ---------------------------------------------------------------------------
 // List filters, searchable pickers, CSV export (generic admin engine).

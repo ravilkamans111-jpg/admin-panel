@@ -1,13 +1,11 @@
-"""Password hashing and JWT issuance/verification.
+"""JWT issuance/verification for the two-step login.
 
-Two-step login, matching the TZ:
-1. POST /auth/login (email+password) -> verifies credentials, returns a
-   short-lived `pre_auth` token plus the list of brands this admin user can
-   access. No brand_id yet: the admin hasn't chosen a workspace.
-2. POST /auth/select-brand (pre_auth token + brand_id) -> verifies the user
-   actually has BrandAccess to that brand_id, and issues a brand-scoped
-   access+refresh token pair. Every subsequent request carries `brand_id` in
-   the access token; tenancy.deps resolves the tenant DB session from it.
+1. POST /auth/login (username + password) -> the credentials are checked against
+   each brand's own Django `auth_user` (see `app.services.auth_service`); a
+   short-lived `pre_auth` token lists the brands they were valid in.
+2. POST /auth/select-brand (pre_auth token + brand_id) -> issues a brand-scoped
+   access+refresh token pair. Every later request carries `brand_id` in the
+   access token; `app.api.deps` resolves the tenant DB session from it.
 """
 
 from __future__ import annotations
@@ -17,50 +15,9 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 import jwt
-from argon2 import PasswordHasher
-from argon2.exceptions import InvalidHashError, VerifyMismatchError
 from pydantic import BaseModel
 
 from app.core.config import get_auth_secrets
-
-_hasher = PasswordHasher()
-
-
-def hash_password(plain_password: str) -> str:
-    return _hasher.hash(plain_password)
-
-
-def verify_password(plain_password: str, password_hash: str) -> bool:
-    try:
-        return _hasher.verify(password_hash, plain_password)
-    except (VerifyMismatchError, InvalidHashError):
-        return False
-
-
-def password_needs_rehash(password_hash: str) -> bool:
-    return _hasher.check_needs_rehash(password_hash)
-
-
-# Verified against when the account doesn't exist, so a login attempt costs
-# the same time whether or not the email is registered (no user enumeration
-# by response timing).
-DUMMY_PASSWORD_HASH = _hasher.hash("dummy-password-for-timing-equalisation")
-
-
-class WeakPasswordError(ValueError):
-    pass
-
-
-def validate_password_strength(password: str, *, min_length: int, email: str | None = None) -> None:
-    if len(password) < min_length:
-        raise WeakPasswordError(f"Пароль должен быть не короче {min_length} символов")
-    if password.lower() in {"password", "password123", "qwerty123456", "1234567890ab"} or len(set(password)) < 5:
-        raise WeakPasswordError("Пароль слишком простой")
-    local_part = email.split("@")[0].lower() if email else ""
-    if len(local_part) >= 4 and local_part in password.lower():
-        raise WeakPasswordError("Пароль не должен содержать часть email")
-    if not (any(c.isalpha() for c in password) and any(c.isdigit() for c in password)):
-        raise WeakPasswordError("Пароль должен содержать буквы и цифры")
 
 
 class TokenScope(StrEnum):
@@ -74,7 +31,8 @@ class DecodedToken(BaseModel):
     scope: TokenScope
     brand_id: str | None = None
     role: str | None = None
-    ver: int = 0
+    ver: str = ""
+    brands: dict[str, int] = {}  # pre-auth only: brand_id -> that brand's auth_user.id
     jti: str
 
 
@@ -90,9 +48,11 @@ def _encode(payload: dict, expires_delta: timedelta) -> str:
     return jwt.encode(to_encode, secrets.jwt_secret_key, algorithm=secrets.jwt_algorithm)
 
 
-def create_pre_auth_token(admin_user_id: int) -> str:
+def create_pre_auth_token(username: str, brands: dict[str, int]) -> str:
+    """`sub` is the login name; `brands` maps every brand the credentials were
+    valid in to that brand's own `auth_user.id` (ids differ per brand DB)."""
     return _encode(
-        {"sub": str(admin_user_id), "scope": TokenScope.PRE_AUTH.value},
+        {"sub": username, "scope": TokenScope.PRE_AUTH.value, "brands": brands},
         timedelta(minutes=5),
     )
 
@@ -105,7 +65,7 @@ def create_access_token(admin_user_id: int, brand_id: str, role: str) -> str:
     )
 
 
-def create_refresh_token(admin_user_id: int, brand_id: str, role: str, token_version: int = 0) -> str:
+def create_refresh_token(admin_user_id: int, brand_id: str, role: str, version: str = "") -> str:
     secrets = get_auth_secrets()
     return _encode(
         {
@@ -113,7 +73,7 @@ def create_refresh_token(admin_user_id: int, brand_id: str, role: str, token_ver
             "scope": TokenScope.REFRESH.value,
             "brand_id": brand_id,
             "role": role,
-            "ver": token_version,
+            "ver": version,
         },
         timedelta(days=secrets.refresh_token_expire_days),
     )

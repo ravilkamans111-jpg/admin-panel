@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.registry.admin_models import get_config, mask_row
 from app.services import audit_service, generic_write_service
 
@@ -37,7 +36,6 @@ async def create_record(
     body: dict[str, Any] = Body(default_factory=dict),
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     config = _config_or_404(model_key)
     if not config.creatable:
@@ -53,7 +51,6 @@ async def create_record(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="create_record",
@@ -74,7 +71,6 @@ async def update_record(
     body: dict[str, Any] = Body(default_factory=dict),
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     config = _config_or_404(model_key)
     if not config.is_writable:
@@ -95,7 +91,6 @@ async def update_record(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_record",
@@ -115,7 +110,6 @@ async def delete_record(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> None:
     config = _config_or_404(model_key)
     if not config.deletable:
@@ -131,7 +125,6 @@ async def delete_record(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="delete_record",

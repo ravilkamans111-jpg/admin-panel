@@ -24,7 +24,6 @@ from app.api.deps import (
 )
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.models.tenant import Transaction
 from app.services import audit_service, callback_service, transaction_write_service
 from app.services.transaction_write_service import EDITABLE_FIELDS
@@ -116,7 +115,6 @@ async def update_transaction(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     if not values:
@@ -141,7 +139,6 @@ async def update_transaction(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_transaction",

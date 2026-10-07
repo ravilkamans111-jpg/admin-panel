@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_session, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.services import audit_service, callback_service, settlement_write_service
 from app.services.settlement_write_service import CREATE_ONLY_FIELDS, EDITABLE_FIELDS
 
@@ -83,7 +82,6 @@ async def create_settlement(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     allowed = set(EDITABLE_FIELDS) | set(CREATE_ONLY_FIELDS)
@@ -104,7 +102,6 @@ async def create_settlement(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="create_settlement",
@@ -126,7 +123,6 @@ async def update_settlement(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     unknown = [f for f in values if f not in EDITABLE_FIELDS]
@@ -151,7 +147,6 @@ async def update_settlement(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_settlement",

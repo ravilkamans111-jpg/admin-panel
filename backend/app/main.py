@@ -16,7 +16,6 @@ from app.api.merchant_balance_writes import router as merchant_balance_writes_ro
 from app.api.merchant_bulk_actions import router as merchant_bulk_actions_router
 from app.api.payment_method_writes import router as payment_method_writes_router
 from app.api.settlement_writes import router as settlement_writes_router
-from app.api.staff import router as staff_router
 from app.api.transaction_writes import router as transaction_writes_router
 from app.core.settings_env import env_settings
 from app.db.tenant_registry import dispose_all_engines
@@ -44,7 +43,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_router)
-app.include_router(staff_router)
+# app.include_router(staff_router)  # disabled — see backend/disabled/control_plane/README.md
 app.include_router(transaction_writes_router)
 app.include_router(settlement_writes_router)
 app.include_router(antifraud_writes_router)

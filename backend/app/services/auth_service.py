@@ -1,45 +1,55 @@
-"""Бизнес-логика двухшаговой аутентификации.
+"""Двухшаговая аутентификация — как в админке монолита.
 
-Учётные записи персонала живут только в control-plane БД (`admin_user`,
-`brand_access`); никаких встроенных учёток нет. Слой сервисов не знает о
-FastAPI: он поднимает исключения из `app.core.exceptions`, а перевод их в
-HTTP-коды — работа обработчика (`app.api.auth`).
+Логин — это логин Django: проверяем `username` + пароль по таблице `auth_user`
+каждого бренда (PBKDF2, как у `django.contrib.auth.ModelBackend`), пропускаем
+`is_active and is_staff` (условие входа в Django admin). Отдельной БД
+пользователей у сервиса нет: пользователи, пароли и их деактивация — те же, что
+в монолите.
+
+Роль в бренде:
+  - `is_superuser`                      -> superadmin (в Django — все права);
+  - есть права add_/change_/delete_      -> operator   (может править);
+  - иначе (только view_ или без прав)    -> viewer.
+
+Токены без состояния. Refresh-токен несёт отпечаток хэша пароля — смена пароля
+в монолите или деактивация пользователя отзывает сессии при ближайшем refresh.
+Сервис сообщает домен-исключения из `app.core.exceptions`; перевод в HTTP — в
+`app.api.auth`.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.brands import KNOWN_BRANDS
+from app.core.django_password import DUMMY_DJANGO_HASH, password_fingerprint, verify_django_password
 from app.core.exceptions import (
     AccountInactiveError,
     AccountLockedError,
     BrandAccessDeniedError,
     InvalidCredentialsError,
     InvalidTokenError,
-    RecordNotFoundError,
     UnknownBrandError,
 )
 from app.core.roles import BrandRole
 from app.core.security import (
-    DUMMY_PASSWORD_HASH,
     TokenError,
     TokenScope,
     create_access_token,
     create_pre_auth_token,
     create_refresh_token,
     decode_token,
-    hash_password,
-    password_needs_rehash,
-    validate_password_strength,
-    verify_password,
 )
-from app.core.settings_env import env_settings
-from app.models.control_plane import AdminUser
-from app.repositories import control_plane_repository as repo
+from app.db.tenant_registry import get_tenant_sessionmaker
+from app.repositories import django_auth_repository as users
+from app.services import login_throttle
+
+logger = logging.getLogger("audit")
+
+WRITE_PERMISSION_PREFIXES = ("add_", "change_", "delete_")
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,185 +75,95 @@ class TokenPair:
 
 @dataclass(frozen=True, slots=True)
 class CurrentAdminUser:
-    admin_user_id: int
-    email: str
-    full_name: str
-    is_superuser: bool
+    username: str
+    brands: list[str]
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
-def _is_locked(user: AdminUser) -> bool:
-    if user.locked_until is None:
-        return False
-    locked_until = user.locked_until if user.locked_until.tzinfo else user.locked_until.replace(tzinfo=UTC)
-    return locked_until > _now()
-
-
-async def _resolve_available_brands(session: AsyncSession, user: AdminUser) -> list[BrandOption]:
-    if user.is_superuser:
-        return [
-            BrandOption(brand_id=b.brand_id, display_name=b.display_name, role=BrandRole.SUPERADMIN.value)
-            for b in KNOWN_BRANDS.values()
-        ]
-    access_rows = await repo.get_brand_access_list(session, user.id)
-    return [
-        BrandOption(
-            brand_id=row.brand_id,
-            display_name=KNOWN_BRANDS[row.brand_id].display_name if row.brand_id in KNOWN_BRANDS else row.brand_id,
-            role=row.role.value,
-        )
-        for row in access_rows
-        if row.brand_id in KNOWN_BRANDS
-    ]
-
-
-async def _resolve_role(session: AsyncSession, user: AdminUser, brand_id: str) -> str:
+async def _role_for(session: AsyncSession, user: users.DjangoStaffUser) -> str:
     if user.is_superuser:
         return BrandRole.SUPERADMIN.value
-    access = await repo.get_brand_access(session, user.id, brand_id)
-    if access is None:
-        raise BrandAccessDeniedError(brand_id)
-    return access.role.value
+    codenames = await users.get_permission_codenames(session, user.id)
+    if any(c.startswith(WRITE_PERMISSION_PREFIXES) for c in codenames):
+        return BrandRole.OPERATOR.value
+    return BrandRole.VIEWER.value
 
 
-async def login(session: AsyncSession, *, email: str, password: str, ip_address: str | None) -> LoginResult:
-    user = await repo.get_admin_user_by_email(session, email)
-
-    if user is None:
-        verify_password(password, DUMMY_PASSWORD_HASH)
-        await repo.write_audit_log(
-            session, admin_user_id=None, brand_id=None, action="login_failed",
-            detail={"email": email}, ip_address=ip_address,
-        )
-        raise InvalidCredentialsError
-
-    if _is_locked(user):
-        await repo.write_audit_log(
-            session, admin_user_id=user.id, brand_id=None, action="login_locked", ip_address=ip_address
-        )
+async def login(*, username: str, password: str, ip_address: str | None) -> LoginResult:
+    username = username.strip()
+    if await login_throttle.is_locked(username):
+        logger.warning("login_locked username=%s ip=%s", username, ip_address)
         raise AccountLockedError
 
-    password_ok = verify_password(password, user.password_hash)
-    if not password_ok or not user.is_active:
-        if user.is_active:
-            user.failed_login_attempts += 1
-            if user.failed_login_attempts >= env_settings.login_max_failed_attempts:
-                user.locked_until = _now() + timedelta(minutes=env_settings.login_lockout_minutes)
-                user.failed_login_attempts = 0
-        await session.commit()
-        await repo.write_audit_log(
-            session, admin_user_id=user.id, brand_id=None, action="login_failed",
-            detail={"email": email}, ip_address=ip_address,
-        )
+    options: list[BrandOption] = []
+    brand_users: dict[str, int] = {}
+    for brand_id, brand in KNOWN_BRANDS.items():
+        try:
+            async with get_tenant_sessionmaker(brand_id)() as session:
+                user = await users.get_user_by_username(session, username)
+                # Always one hash verification per brand, user or not (no timing oracle).
+                password_ok = verify_django_password(password, user.password_hash if user else DUMMY_DJANGO_HASH)
+                if user is not None and password_ok and user.can_use_admin:
+                    brand_users[brand_id] = user.id
+                    options.append(
+                        BrandOption(brand_id=brand_id, display_name=brand.display_name, role=await _role_for(session, user))
+                    )
+        except Exception:
+            logger.exception("login: brand %s unavailable", brand_id)
+
+    if not options:
+        await login_throttle.register_failure(username)
+        logger.warning("login_failed username=%s ip=%s", username, ip_address)
         raise InvalidCredentialsError
 
-    user.failed_login_attempts = 0
-    user.locked_until = None
-    user.last_login_at = _now()
-    if password_needs_rehash(user.password_hash):
-        user.password_hash = hash_password(password)
-    await session.commit()
-
-    available_brands = await _resolve_available_brands(session, user)
-    await repo.write_audit_log(session, admin_user_id=user.id, brand_id=None, action="login", ip_address=ip_address)
-    return LoginResult(pre_auth_token=create_pre_auth_token(user.id), available_brands=available_brands)
+    await login_throttle.clear(username)
+    logger.info("login username=%s brands=%s ip=%s", username, sorted(brand_users), ip_address)
+    return LoginResult(pre_auth_token=create_pre_auth_token(username, brand_users), available_brands=options)
 
 
-def _issue_tokens(user: AdminUser, brand_id: str, role: str) -> TokenPair:
+async def _load_active_user(session: AsyncSession, user_id: int) -> users.DjangoStaffUser:
+    user = await users.get_user_by_id(session, user_id)
+    if user is None or not user.can_use_admin:
+        raise AccountInactiveError
+    return user
+
+
+async def _issue(session: AsyncSession, user: users.DjangoStaffUser, brand_id: str) -> TokenPair:
+    role = await _role_for(session, user)
     return TokenPair(
         access_token=create_access_token(user.id, brand_id, role),
-        refresh_token=create_refresh_token(user.id, brand_id, role, user.token_version),
+        refresh_token=create_refresh_token(user.id, brand_id, role, password_fingerprint(user.password_hash)),
         brand_id=brand_id,
         role=role,
     )
 
 
-async def select_brand(
-    session: AsyncSession, *, admin_user_id: int, brand_id: str, ip_address: str | None
-) -> TokenPair:
+async def select_brand(*, username: str, brand_users: dict[str, int], brand_id: str, ip_address: str | None) -> TokenPair:
     if brand_id not in KNOWN_BRANDS:
         raise UnknownBrandError(brand_id)
-
-    user = await repo.get_admin_user_by_id(session, admin_user_id)
-    if user is None or not user.is_active:
-        raise AccountInactiveError
-
-    try:
-        role = await _resolve_role(session, user, brand_id)
-    except BrandAccessDeniedError:
-        await repo.write_audit_log(
-            session, admin_user_id=admin_user_id, brand_id=brand_id, action="access_denied", ip_address=ip_address
-        )
-        raise
-
-    await repo.write_audit_log(
-        session, admin_user_id=admin_user_id, brand_id=brand_id, action="select_brand", ip_address=ip_address
-    )
-    return _issue_tokens(user, brand_id, role)
+    user_id = brand_users.get(brand_id)
+    if user_id is None:
+        logger.warning("access_denied username=%s brand=%s ip=%s", username, brand_id, ip_address)
+        raise BrandAccessDeniedError(brand_id)
+    async with get_tenant_sessionmaker(brand_id)() as session:
+        user = await _load_active_user(session, user_id)
+        pair = await _issue(session, user, brand_id)
+    logger.info("select_brand username=%s brand=%s role=%s ip=%s", username, brand_id, pair.role, ip_address)
+    return pair
 
 
-async def refresh_tokens(session: AsyncSession, *, refresh_token: str) -> TokenPair:
+async def refresh_tokens(*, refresh_token: str) -> TokenPair:
     try:
         claims = decode_token(refresh_token, TokenScope.REFRESH)
     except TokenError as exc:
         raise InvalidTokenError(str(exc)) from exc
-
-    if not claims.brand_id:
+    if not claims.brand_id or claims.brand_id not in KNOWN_BRANDS:
         raise AccountInactiveError
-
-    user = await repo.get_admin_user_by_id(session, int(claims.sub))
-    if user is None or not user.is_active:
-        raise AccountInactiveError
-    if claims.ver != user.token_version:
-        raise InvalidTokenError("Session revoked")
-
-    # Brand access is re-checked on every refresh so a revoked grant takes
-    # effect without waiting for the refresh token to expire.
-    role = await _resolve_role(session, user, claims.brand_id)
-    return _issue_tokens(user, claims.brand_id, role)
+    async with get_tenant_sessionmaker(claims.brand_id)() as session:
+        user = await _load_active_user(session, int(claims.sub))
+        if claims.ver != password_fingerprint(user.password_hash):
+            raise InvalidTokenError("Session revoked")
+        return await _issue(session, user, claims.brand_id)
 
 
-async def get_current_admin_user(session: AsyncSession, *, admin_user_id: int) -> CurrentAdminUser:
-    user = await repo.get_admin_user_by_id(session, admin_user_id)
-    if user is None:
-        raise RecordNotFoundError("Admin user no longer exists")
-    return CurrentAdminUser(
-        admin_user_id=user.id, email=user.email, full_name=user.full_name, is_superuser=user.is_superuser
-    )
-
-
-async def change_password(
-    session: AsyncSession,
-    *,
-    admin_user_id: int,
-    brand_id: str,
-    current_password: str,
-    new_password: str,
-    ip_address: str | None,
-) -> TokenPair:
-    """Verifies the current password, sets the new one and revokes every other
-    session (token_version bump). Returns a fresh token pair for the caller so
-    their own session survives. Raises WeakPasswordError (core.security) if the
-    new password fails policy."""
-    user = await repo.get_admin_user_by_id(session, admin_user_id)
-    if user is None or not user.is_active:
-        raise AccountInactiveError
-    if not verify_password(current_password, user.password_hash):
-        await repo.write_audit_log(
-            session, admin_user_id=user.id, brand_id=brand_id, action="change_password_failed", ip_address=ip_address
-        )
-        raise InvalidCredentialsError
-    validate_password_strength(new_password, min_length=env_settings.min_password_length, email=user.email)
-
-    user.password_hash = hash_password(new_password)
-    user.password_changed_at = _now()
-    user.token_version += 1
-    await session.commit()
-    await repo.write_audit_log(
-        session, admin_user_id=user.id, brand_id=brand_id, action="change_password", ip_address=ip_address
-    )
-    role = await _resolve_role(session, user, brand_id)
-    return _issue_tokens(user, brand_id, role)
+def describe_pre_auth(*, username: str, brand_users: dict[str, int]) -> CurrentAdminUser:
+    return CurrentAdminUser(username=username, brands=sorted(brand_users))

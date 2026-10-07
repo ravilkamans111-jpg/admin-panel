@@ -3,12 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSchema } from "@/lib/schema-context";
-import { useAuth } from "@/lib/auth-context";
 
 export function Sidebar() {
   const { groupedByApp, loading, error } = useSchema();
   const pathname = usePathname();
-  const { role } = useAuth();
 
   return (
     <nav className="w-64 shrink-0 overflow-y-auto border-r border-[var(--border)] px-3 py-4">
@@ -49,6 +47,7 @@ export function Sidebar() {
         </div>
       ))}
 
+      {/* DISABLED — staff management (see frontend/disabled/staff-management/)
       {role === "superadmin" && (
         <div className="mb-4">
           <div className="mb-1 px-3 text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">
@@ -64,6 +63,7 @@ export function Sidebar() {
           </Link>
         </div>
       )}
+      */}
     </nav>
   );
 }

@@ -28,16 +28,9 @@ class EnvSettings(BaseSettings):
     # Optional: where THIS service's own secrets (JWT key) live; defaults to vault_mount.
     vault_mount_admin_panel: str | None = None
 
-    # Control-plane DB (staff auth / brand registry / audit log) connection.
-    # Sourced from env even in prod, since it is needed to bootstrap Vault-based
-    # config resolution for everything else. No default: a missing value must
-    # fail startup rather than silently pointing at a development database.
-    control_plane_database_url: str
-
-    # Staff login policy.
+    # Staff login throttling (counters live in Redis; see app.services.login_throttle).
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
-    min_password_length: int = 12
 
     cors_allow_origins: str = "http://localhost:3000"
 

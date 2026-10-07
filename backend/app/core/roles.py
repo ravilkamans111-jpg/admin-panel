@@ -1,8 +1,8 @@
 """Brand-scoped role vocabulary and hierarchy.
 
 Lives in `core` (not `models`) because it's a plain business concept that
-both the DB layer (`app.models.control_plane.BrandAccess.role` uses this as
-its column type) and the write-authorization layer
+both the auth service (roles derived from a user's Django permissions) and the
+write-authorization layer
 (`app.core.rbac`/`app.api.deps.require_role`) need — and `core` sits at the
 bottom of the import-linter layer contract, so nothing above it can hand it
 a dependency in the wrong direction.

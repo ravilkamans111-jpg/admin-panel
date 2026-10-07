@@ -16,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.services import audit_service, merchant_bulk_actions_service
 
 router = APIRouter(prefix="/admin/merchants", tags=["merchant-bulk-actions"])
@@ -49,7 +48,6 @@ async def apply_template_to_merchants(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     try:
         await merchant_bulk_actions_service.validate_merchant_ids(tenant_session, body.merchant_ids)
@@ -69,7 +67,6 @@ async def apply_template_to_merchants(
 
     payload = _result_payload(result)
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="apply_template_to_merchants",
@@ -88,7 +85,6 @@ async def apply_selected_methods_to_merchants(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     try:
         await merchant_bulk_actions_service.validate_merchant_ids(tenant_session, body.merchant_ids)
@@ -117,7 +113,6 @@ async def apply_selected_methods_to_merchants(
 
     payload = _result_payload(result)
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="apply_selected_methods_to_merchants",

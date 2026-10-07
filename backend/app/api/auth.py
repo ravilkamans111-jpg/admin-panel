@@ -1,35 +1,36 @@
 """HTTP handlers for the two-step login flow.
 
 Thin by design: parse the request, call `app.services.auth_service`, map its
-domain exceptions to HTTP status codes, shape the response. No SQL, no JWT
-encoding, no business rules live here — that's the service layer's job.
+domain exceptions to HTTP status codes, shape the response. Credentials are the
+staff member's Django admin login (`auth_user` of each brand) — see the service.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, EmailStr
-from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import BaseModel
 
-from app.api.deps import CurrentUser, get_current_user, get_pre_auth_claims
+from app.api.deps import get_pre_auth_claims
 from app.core.exceptions import (
     AccountInactiveError,
     AccountLockedError,
     BrandAccessDeniedError,
     InvalidCredentialsError,
     InvalidTokenError,
-    RecordNotFoundError,
     UnknownBrandError,
 )
-from app.core.security import DecodedToken, WeakPasswordError
-from app.db.control_plane import get_control_plane_session
+from app.core.security import DecodedToken
 from app.services import auth_service
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 
+def _ip(request: Request) -> str | None:
+    return request.client.host if request.client else None
+
+
 class LoginRequest(BaseModel):
-    email: EmailStr
+    username: str
     password: str
 
 
@@ -45,28 +46,20 @@ class LoginResponse(BaseModel):
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(
-    body: LoginRequest,
-    request: Request,
-    session: AsyncSession = Depends(get_control_plane_session),
-) -> LoginResponse:
+async def login(body: LoginRequest, request: Request) -> LoginResponse:
     try:
-        result = await auth_service.login(
-            session,
-            email=body.email,
-            password=body.password,
-            ip_address=request.client.host if request.client else None,
-        )
+        result = await auth_service.login(username=body.username, password=body.password, ip_address=_ip(request))
     except InvalidCredentialsError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid credentials") from exc
     except AccountLockedError as exc:
         raise HTTPException(
             status.HTTP_429_TOO_MANY_REQUESTS, "Слишком много неудачных попыток входа. Повторите позже."
         ) from exc
-
     return LoginResponse(
         pre_auth_token=result.pre_auth_token,
-        available_brands=[BrandOption(brand_id=b.brand_id, display_name=b.display_name, role=b.role) for b in result.available_brands],
+        available_brands=[
+            BrandOption(brand_id=b.brand_id, display_name=b.display_name, role=b.role) for b in result.available_brands
+        ],
     )
 
 
@@ -81,19 +74,20 @@ class TokenPairResponse(BaseModel):
     role: str
 
 
+def _pair(result: auth_service.TokenPair) -> TokenPairResponse:
+    return TokenPairResponse(
+        access_token=result.access_token, refresh_token=result.refresh_token,
+        brand_id=result.brand_id, role=result.role,
+    )
+
+
 @router.post("/select-brand", response_model=TokenPairResponse)
 async def select_brand(
-    body: SelectBrandRequest,
-    request: Request,
-    claims: DecodedToken = Depends(get_pre_auth_claims),
-    session: AsyncSession = Depends(get_control_plane_session),
+    body: SelectBrandRequest, request: Request, claims: DecodedToken = Depends(get_pre_auth_claims)
 ) -> TokenPairResponse:
     try:
         result = await auth_service.select_brand(
-            session,
-            admin_user_id=int(claims.sub),
-            brand_id=body.brand_id,
-            ip_address=request.client.host if request.client else None,
+            username=claims.sub, brand_users=claims.brands, brand_id=body.brand_id, ip_address=_ip(request)
         )
     except AccountInactiveError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer active") from exc
@@ -101,13 +95,7 @@ async def select_brand(
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown brand '{body.brand_id}'") from exc
     except BrandAccessDeniedError as exc:
         raise HTTPException(status.HTTP_403_FORBIDDEN, "No access to this brand") from exc
-
-    return TokenPairResponse(
-        access_token=result.access_token,
-        refresh_token=result.refresh_token,
-        brand_id=result.brand_id,
-        role=result.role,
-    )
+    return _pair(result)
 
 
 class RefreshRequest(BaseModel):
@@ -115,85 +103,22 @@ class RefreshRequest(BaseModel):
 
 
 @router.post("/refresh", response_model=TokenPairResponse)
-async def refresh(
-    body: RefreshRequest,
-    session: AsyncSession = Depends(get_control_plane_session),
-) -> TokenPairResponse:
+async def refresh(body: RefreshRequest) -> TokenPairResponse:
     try:
-        result = await auth_service.refresh_tokens(session, refresh_token=body.refresh_token)
+        result = await auth_service.refresh_tokens(refresh_token=body.refresh_token)
     except InvalidTokenError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, str(exc)) from exc
     except AccountInactiveError as exc:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer active") from exc
-    except BrandAccessDeniedError as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Brand access revoked") from exc
-
-    return TokenPairResponse(
-        access_token=result.access_token,
-        refresh_token=result.refresh_token,
-        brand_id=result.brand_id,
-        role=result.role,
-    )
-
-
-class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
-
-
-@router.post("/change-password", response_model=TokenPairResponse)
-async def change_password(
-    body: ChangePasswordRequest,
-    request: Request,
-    current_user: CurrentUser = Depends(get_current_user),
-    session: AsyncSession = Depends(get_control_plane_session),
-) -> TokenPairResponse:
-    try:
-        result = await auth_service.change_password(
-            session,
-            admin_user_id=current_user.admin_user_id,
-            brand_id=current_user.brand_id,
-            current_password=body.current_password,
-            new_password=body.new_password,
-            ip_address=request.client.host if request.client else None,
-        )
-    except InvalidCredentialsError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Текущий пароль указан неверно") from exc
-    except WeakPasswordError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    except AccountInactiveError as exc:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Account no longer active") from exc
-    except BrandAccessDeniedError as exc:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Brand access revoked") from exc
-
-    return TokenPairResponse(
-        access_token=result.access_token,
-        refresh_token=result.refresh_token,
-        brand_id=result.brand_id,
-        role=result.role,
-    )
+    return _pair(result)
 
 
 class MeResponse(BaseModel):
-    admin_user_id: int
-    email: str
-    full_name: str
-    is_superuser: bool
+    username: str
+    brands: list[str]
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(
-    claims: DecodedToken = Depends(get_pre_auth_claims),
-    session: AsyncSession = Depends(get_control_plane_session),
-) -> MeResponse:
-    try:
-        result = await auth_service.get_current_admin_user(session, admin_user_id=int(claims.sub))
-    except RecordNotFoundError as exc:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found") from exc
-
-    return MeResponse(
-        admin_user_id=result.admin_user_id,
-        email=result.email,
-        full_name=result.full_name,
-        is_superuser=result.is_superuser,
-    )
+async def me(claims: DecodedToken = Depends(get_pre_auth_claims)) -> MeResponse:
+    described = auth_service.describe_pre_auth(username=claims.sub, brand_users=claims.brands)
+    return MeResponse(username=described.username, brands=described.brands)

@@ -7,7 +7,7 @@ no `brand_id` column anywhere in their tables). This registry just resolves
 `brand_id` -> an async SQLAlchemy engine/session for that brand's DB,
 creating and caching engines lazily on first use.
 
-Lowest layer alongside `app/db/control_plane.py`: pure connection management.
+Lowest layer: pure connection management.
 All sessions handed out here are used read-only — see `app.api.deps.get_tenant_session`,
 which wraps every session in `SET TRANSACTION READ ONLY`; the repository
 layer (`app.repositories`) only ever issues SELECTs on top of it.

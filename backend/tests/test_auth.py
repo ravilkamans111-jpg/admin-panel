@@ -1,323 +1,300 @@
+"""Login mirrors the monolith's Django admin: credentials are a brand's own
+`auth_user` row (PBKDF2), `is_active and is_staff` gate, role from permissions."""
+
 from __future__ import annotations
+
+import base64
+import hashlib
 
 import pytest
 import pytest_asyncio
 from httpx import AsyncClient
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.core.security import hash_password
-from app.models.control_plane import AdminUser, BrandAccess
+from app.core.django_password import verify_django_password
+from app.models.tenant import TenantBase
+from app.services import audit_service, auth_service, login_throttle
 
 pytestmark = pytest.mark.asyncio
 
 
-async def test_login_wrong_password_rejected(raw_client: AsyncClient, seeded_admin_user):
-    resp = await raw_client.post(
-        "/auth/login", json={"email": "viewer@example.com", "password": "wrong-password"}
-    )
-    assert resp.status_code == 401
+def django_hash(password: str, *, iterations: int = 600_000, salt: str = "salty") -> str:
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations)
+    return f"pbkdf2_sha256${iterations}${salt}${base64.b64encode(digest).decode()}"
 
-
-async def test_login_returns_available_brands(raw_client: AsyncClient, seeded_admin_user):
-    resp = await raw_client.post(
-        "/auth/login", json={"email": "viewer@example.com", "password": "correct-horse-battery-staple"}
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert "pre_auth_token" in body
-    assert [b["brand_id"] for b in body["available_brands"]] == ["ampay"]
-    assert body["available_brands"][0]["role"] == "viewer"
-
-
-async def test_select_brand_denied_for_unassigned_brand(raw_client: AsyncClient, seeded_admin_user):
-    login_resp = await raw_client.post(
-        "/auth/login", json={"email": "viewer@example.com", "password": "correct-horse-battery-staple"}
-    )
-    pre_auth_token = login_resp.json()["pre_auth_token"]
-
-    resp = await raw_client.post(
-        "/auth/select-brand",
-        json={"brand_id": "rajapay"},
-        headers={"Authorization": f"Bearer {pre_auth_token}"},
-    )
-    assert resp.status_code == 403
-
-
-async def test_select_brand_success_issues_scoped_token(raw_client: AsyncClient, seeded_admin_user):
-    login_resp = await raw_client.post(
-        "/auth/login", json={"email": "viewer@example.com", "password": "correct-horse-battery-staple"}
-    )
-    pre_auth_token = login_resp.json()["pre_auth_token"]
-
-    resp = await raw_client.post(
-        "/auth/select-brand",
-        json={"brand_id": "ampay"},
-        headers={"Authorization": f"Bearer {pre_auth_token}"},
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["brand_id"] == "ampay"
-    assert body["role"] == "viewer"
-    assert "access_token" in body
-    assert "refresh_token" in body
-
-
-async def test_admin_endpoint_rejects_missing_token(raw_client: AsyncClient):
-    resp = await raw_client.get("/admin/schema")
-    assert resp.status_code in (401, 403)
-
-
-# --- DB-backed superuser, lockout, sessions, password change ---
 
 PASSWORD = "correct-horse-battery-staple"
 
+BRAND_SCHEMA = [
+    "ALTER TABLE auth_user ADD COLUMN password VARCHAR(128) NOT NULL DEFAULT ''",
+    "CREATE TABLE auth_permission (id INTEGER PRIMARY KEY, codename VARCHAR(100))",
+    "CREATE TABLE auth_user_user_permissions (user_id INTEGER, permission_id INTEGER)",
+    "CREATE TABLE auth_group_permissions (group_id INTEGER, permission_id INTEGER)",
+    "CREATE TABLE auth_user_groups (user_id INTEGER, group_id INTEGER)",
+    "CREATE TABLE django_content_type (id INTEGER PRIMARY KEY, app_label VARCHAR, model VARCHAR)",
+    (
+        "CREATE TABLE django_admin_log (id INTEGER PRIMARY KEY AUTOINCREMENT, action_time TIMESTAMP, object_id TEXT,"
+        " object_repr VARCHAR(200), action_flag SMALLINT, change_message TEXT, content_type_id INTEGER, user_id INTEGER)"
+    ),
+    "INSERT INTO auth_permission (id, codename) VALUES (1, 'view_transaction'), (2, 'change_transaction')",
+]
 
-async def _login(client: AsyncClient, email: str, password: str = PASSWORD):
-    return await client.post("/auth/login", json={"email": email, "password": password})
 
-
-async def _tokens(client: AsyncClient, email: str, brand: str = "ampay", password: str = PASSWORD) -> dict:
-    login_resp = await _login(client, email, password)
-    assert login_resp.status_code == 200, login_resp.text
-    resp = await client.post(
-        "/auth/select-brand",
-        json={"brand_id": brand},
-        headers={"Authorization": f"Bearer {login_resp.json()['pre_auth_token']}"},
+async def add_user(session, username, *, password=PASSWORD, active=True, staff=True, superuser=False, perms=()):
+    await session.execute(
+        text(
+            "INSERT INTO auth_user (username, first_name, last_name, email, is_active, is_staff, is_superuser,"
+            " date_joined, password) VALUES (:u, '', '', '', :a, :s, :su, '2026-01-01', :p)"
+        ),
+        {"u": username, "a": active, "s": staff, "su": superuser, "p": django_hash(password)},
     )
-    assert resp.status_code == 200, resp.text
-    return resp.json()
-
-
-def _bearer(tokens: dict) -> dict:
-    return {"Authorization": f"Bearer {tokens['access_token']}"}
+    user_id = (await session.execute(text("SELECT id FROM auth_user WHERE username = :u"), {"u": username})).scalar_one()
+    for perm_id in perms:
+        await session.execute(
+            text("INSERT INTO auth_user_user_permissions VALUES (:u, :p)"), {"u": user_id, "p": perm_id}
+        )
+    await session.commit()
+    return user_id
 
 
 @pytest_asyncio.fixture
-async def seeded_superuser(control_plane_session):
-    user = AdminUser(
-        email="root@example.com", password_hash=hash_password(PASSWORD), full_name="Root",
-        is_active=True, is_superuser=True,
+async def brand_db(monkeypatch):
+    """One in-memory DB standing in for every brand's Django database."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(TenantBase.metadata.create_all)
+        for statement in BRAND_SCHEMA:
+            await conn.execute(text(statement))
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    for module in (auth_service, audit_service):
+        monkeypatch.setattr(module, "get_tenant_sessionmaker", lambda brand_id: factory)
+
+    async def no_redis():
+        return None
+
+    monkeypatch.setattr(login_throttle, "_redis", no_redis)
+    login_throttle._memory.clear()
+    async with factory() as session:
+        yield session
+    await engine.dispose()
+
+
+async def login(client: AsyncClient, username: str, password: str = PASSWORD):
+    return await client.post("/auth/login", json={"username": username, "password": password})
+
+
+async def tokens(client: AsyncClient, username: str, brand: str = "ampay", password: str = PASSWORD) -> dict:
+    resp = await login(client, username, password)
+    assert resp.status_code == 200, resp.text
+    selected = await client.post(
+        "/auth/select-brand", json={"brand_id": brand},
+        headers={"Authorization": f"Bearer {resp.json()['pre_auth_token']}"},
     )
-    control_plane_session.add(user)
-    await control_plane_session.commit()
-    await control_plane_session.refresh(user)
-    return user
+    assert selected.status_code == 200, selected.text
+    return selected.json()
 
 
-async def test_no_builtin_credentials_exist(raw_client: AsyncClient, control_plane_session):
-    resp = await _login(raw_client, "admin@example.com", "SuperSecret123!")
-    assert resp.status_code == 401
+# --- password verification -------------------------------------------------
 
 
-async def test_db_superuser_sees_all_brands_with_superadmin_role(raw_client, seeded_superuser):
-    body = (await _login(raw_client, "root@example.com")).json()
+def test_django_pbkdf2_hash_roundtrip_and_failures():
+    encoded = django_hash("s3cret", iterations=1000)
+    assert verify_django_password("s3cret", encoded)
+    assert not verify_django_password("nope", encoded)
+    assert not verify_django_password("s3cret", "!unusable")
+    assert not verify_django_password("s3cret", "")
+    assert not verify_django_password("s3cret", "md5$salt$abc")  # unknown algorithm fails closed
+    assert not verify_django_password("s3cret", "pbkdf2_sha256$notanumber$salt$abc")
+
+
+# --- login / roles -----------------------------------------------------------
+
+
+async def test_superuser_gets_every_brand_as_superadmin(raw_client, brand_db):
+    await add_user(brand_db, "root", staff=True, superuser=True)
+    body = (await login(raw_client, "root")).json()
     assert {b["brand_id"] for b in body["available_brands"]} == {"ampay", "rajapay", "quiet-forest"}
-    assert all(b["role"] == "superadmin" for b in body["available_brands"])
+    assert {b["role"] for b in body["available_brands"]} == {"superadmin"}
 
 
-async def test_email_login_is_case_insensitive(raw_client, seeded_superuser):
-    assert (await _login(raw_client, "ROOT@Example.com")).status_code == 200
+async def test_role_follows_django_permissions(raw_client, brand_db):
+    await add_user(brand_db, "editor", perms=[2])
+    await add_user(brand_db, "reader", perms=[1])
+    await add_user(brand_db, "nobody")
+    assert (await login(raw_client, "editor")).json()["available_brands"][0]["role"] == "operator"
+    assert (await login(raw_client, "reader")).json()["available_brands"][0]["role"] == "viewer"
+    assert (await login(raw_client, "nobody")).json()["available_brands"][0]["role"] == "viewer"
 
 
-async def test_inactive_user_cannot_log_in(raw_client, seeded_admin_user, control_plane_session):
-    seeded_admin_user.is_active = False
-    await control_plane_session.commit()
-    assert (await _login(raw_client, "viewer@example.com")).status_code == 401
+async def test_group_permissions_count_too(raw_client, brand_db):
+    user_id = await add_user(brand_db, "grouped")
+    await brand_db.execute(text("INSERT INTO auth_user_groups VALUES (:u, 7)"), {"u": user_id})
+    await brand_db.execute(text("INSERT INTO auth_group_permissions VALUES (7, 2)"))
+    await brand_db.commit()
+    assert (await login(raw_client, "grouped")).json()["available_brands"][0]["role"] == "operator"
 
 
-async def test_account_locks_after_repeated_failures_even_with_correct_password(raw_client, seeded_admin_user):
+async def test_wrong_password_unknown_user_inactive_and_non_staff_are_all_401(raw_client, brand_db):
+    await add_user(brand_db, "alice")
+    await add_user(brand_db, "gone", active=False)
+    await add_user(brand_db, "customer", staff=False)
+    for username, password in (("alice", "wrong"), ("nobody", PASSWORD), ("gone", PASSWORD), ("customer", PASSWORD)):
+        assert (await login(raw_client, username, password)).status_code == 401
+    assert (await login(raw_client, "alice", "wrong")).json() == (await login(raw_client, "nobody", PASSWORD)).json()
+
+
+async def test_username_is_exact_like_django(raw_client, brand_db):
+    await add_user(brand_db, "Alice")
+    assert (await login(raw_client, "alice")).status_code == 401
+    assert (await login(raw_client, "Alice")).status_code == 200
+
+
+async def test_old_builtin_credentials_do_not_exist(raw_client, brand_db):
+    assert (await login(raw_client, "admin@example.com", "SuperSecret123!")).status_code == 401
+
+
+# --- lockout ------------------------------------------------------------------
+
+
+async def test_repeated_failures_lock_even_the_right_password(raw_client, brand_db):
     from app.core.settings_env import env_settings
 
+    await add_user(brand_db, "alice")
     for _ in range(env_settings.login_max_failed_attempts):
-        assert (await _login(raw_client, "viewer@example.com", "wrong")).status_code == 401
-    locked = await _login(raw_client, "viewer@example.com")
-    assert locked.status_code == 429
+        assert (await login(raw_client, "alice", "wrong")).status_code == 401
+    assert (await login(raw_client, "alice")).status_code == 429
 
 
-async def test_successful_login_resets_failed_counter(raw_client, seeded_admin_user, control_plane_session):
-    for _ in range(2):
-        await _login(raw_client, "viewer@example.com", "wrong")
-    assert (await _login(raw_client, "viewer@example.com")).status_code == 200
-    await control_plane_session.refresh(seeded_admin_user)
-    assert seeded_admin_user.failed_login_attempts == 0
-    assert seeded_admin_user.last_login_at is not None
+async def test_success_resets_the_counter(raw_client, brand_db):
+    from app.core.settings_env import env_settings
+
+    await add_user(brand_db, "alice")
+    for _ in range(env_settings.login_max_failed_attempts - 1):
+        await login(raw_client, "alice", "wrong")
+    assert (await login(raw_client, "alice")).status_code == 200
+    for _ in range(env_settings.login_max_failed_attempts - 1):
+        assert (await login(raw_client, "alice", "wrong")).status_code == 401
+    assert (await login(raw_client, "alice")).status_code == 200
 
 
-async def test_unknown_email_is_indistinguishable_from_wrong_password(raw_client, seeded_admin_user):
-    a = await _login(raw_client, "nobody@example.com", "whatever-password-1")
-    b = await _login(raw_client, "viewer@example.com", "whatever-password-1")
-    assert a.status_code == b.status_code == 401
-    assert a.json() == b.json()
+# --- select-brand / refresh -----------------------------------------------------
 
 
-async def test_refresh_rejected_after_user_deactivated(raw_client, seeded_admin_user, control_plane_session):
-    tokens = await _tokens(raw_client, "viewer@example.com")
-    seeded_admin_user.is_active = False
-    await control_plane_session.commit()
-    resp = await raw_client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
-    assert resp.status_code == 401
+async def test_select_brand_issues_scoped_tokens_with_the_brands_own_user_id(raw_client, brand_db):
+    user_id = await add_user(brand_db, "alice", perms=[2])
+    pair = await tokens(raw_client, "alice", "rajapay")
+    assert (pair["brand_id"], pair["role"]) == ("rajapay", "operator")
+    from app.core.security import TokenScope, decode_token
+
+    assert int(decode_token(pair["access_token"], TokenScope.ACCESS).sub) == user_id
 
 
-async def test_refresh_rejected_after_brand_access_revoked(raw_client, seeded_admin_user, control_plane_session):
-    from sqlalchemy import delete
+async def test_select_brand_rejects_a_brand_the_credentials_were_not_valid_in(raw_client, brand_db, monkeypatch):
+    await add_user(brand_db, "alice")
+    login_resp = (await login(raw_client, "alice")).json()
+    # Pretend rajapay's DB has no such staff user: forge-proof because the token's brand map decides.
+    from app.core.security import create_pre_auth_token
 
-    tokens = await _tokens(raw_client, "viewer@example.com")
-    await control_plane_session.execute(delete(BrandAccess))
-    await control_plane_session.commit()
-    resp = await raw_client.post("/auth/refresh", json={"refresh_token": tokens["refresh_token"]})
+    narrowed = create_pre_auth_token("alice", {"ampay": 1})
+    resp = await raw_client.post(
+        "/auth/select-brand", json={"brand_id": "rajapay"}, headers={"Authorization": f"Bearer {narrowed}"}
+    )
     assert resp.status_code == 403
+    assert login_resp["pre_auth_token"]
 
 
-async def test_change_password_revokes_old_sessions_and_keeps_current(raw_client, seeded_admin_user):
-    old = await _tokens(raw_client, "viewer@example.com")
-    other_session = await _tokens(raw_client, "viewer@example.com")
+async def test_select_brand_unknown_brand_404(raw_client, brand_db):
+    await add_user(brand_db, "alice")
+    pre = (await login(raw_client, "alice")).json()["pre_auth_token"]
+    resp = await raw_client.post("/auth/select-brand", json={"brand_id": "nope"}, headers={"Authorization": f"Bearer {pre}"})
+    assert resp.status_code == 404
 
-    resp = await raw_client.post(
-        "/auth/change-password",
-        json={"current_password": PASSWORD, "new_password": "a-much-better-passphrase-42"},
-        headers=_bearer(old),
+
+async def test_refresh_works_then_dies_on_deactivation(raw_client, brand_db):
+    await add_user(brand_db, "alice")
+    pair = await tokens(raw_client, "alice")
+    assert (await raw_client.post("/auth/refresh", json={"refresh_token": pair["refresh_token"]})).status_code == 200
+    await brand_db.execute(text("UPDATE auth_user SET is_active = 0 WHERE username = 'alice'"))
+    await brand_db.commit()
+    assert (await raw_client.post("/auth/refresh", json={"refresh_token": pair["refresh_token"]})).status_code == 401
+
+
+async def test_refresh_dies_when_the_password_changes_in_the_monolith(raw_client, brand_db):
+    await add_user(brand_db, "alice")
+    pair = await tokens(raw_client, "alice")
+    await brand_db.execute(
+        text("UPDATE auth_user SET password = :p WHERE username = 'alice'"), {"p": django_hash("new-password-1", salt="other")}
     )
-    assert resp.status_code == 200
-    fresh = resp.json()
-
-    assert (await raw_client.post("/auth/refresh", json={"refresh_token": other_session["refresh_token"]})).status_code == 401
-    assert (await raw_client.post("/auth/refresh", json={"refresh_token": fresh["refresh_token"]})).status_code == 200
-    assert (await _login(raw_client, "viewer@example.com", PASSWORD)).status_code == 401
-    assert (await _login(raw_client, "viewer@example.com", "a-much-better-passphrase-42")).status_code == 200
+    await brand_db.commit()
+    assert (await raw_client.post("/auth/refresh", json={"refresh_token": pair["refresh_token"]})).status_code == 401
 
 
-async def test_change_password_requires_correct_current_password(raw_client, seeded_admin_user):
-    tokens = await _tokens(raw_client, "viewer@example.com")
-    resp = await raw_client.post(
-        "/auth/change-password",
-        json={"current_password": "nope", "new_password": "a-much-better-passphrase-42"},
-        headers=_bearer(tokens),
+async def test_refresh_picks_up_a_role_change(raw_client, brand_db):
+    user_id = await add_user(brand_db, "alice", perms=[1])
+    pair = await tokens(raw_client, "alice")
+    assert pair["role"] == "viewer"
+    await brand_db.execute(text("UPDATE auth_user SET is_superuser = 1 WHERE id = :i"), {"i": user_id})
+    await brand_db.commit()
+    resp = await raw_client.post("/auth/refresh", json={"refresh_token": pair["refresh_token"]})
+    assert resp.json()["role"] == "superadmin"
+
+
+async def test_one_unreachable_brand_does_not_block_login(raw_client, brand_db, monkeypatch):
+    await add_user(brand_db, "alice")
+    real = auth_service.get_tenant_sessionmaker
+
+    def flaky(brand_id):
+        if brand_id == "rajapay":
+            raise ConnectionError("db down")
+        return real(brand_id)
+
+    monkeypatch.setattr(auth_service, "get_tenant_sessionmaker", flaky)
+    body = (await login(raw_client, "alice")).json()
+    assert {b["brand_id"] for b in body["available_brands"]} == {"ampay", "quiet-forest"}
+
+
+async def test_admin_endpoint_rejects_missing_token(raw_client):
+    assert (await raw_client.get("/admin/schema")).status_code in (401, 403)
+
+
+async def test_pre_auth_token_cannot_be_used_as_access_token(raw_client, brand_db):
+    await add_user(brand_db, "alice")
+    pre = (await login(raw_client, "alice")).json()["pre_auth_token"]
+    assert (await raw_client.get("/admin/schema", headers={"Authorization": f"Bearer {pre}"})).status_code == 401
+
+
+# --- audit into django_admin_log ------------------------------------------------
+
+
+async def test_audit_writes_django_admin_log_in_django_format(brand_db):
+    user_id = await add_user(brand_db, "alice")
+    await brand_db.execute(text("INSERT INTO django_content_type VALUES (29, 'personal_account_transaction', 'transaction')"))
+    await brand_db.commit()
+    await audit_service.write_record_change_audit(
+        admin_user_id=user_id, brand_id="ampay", action="update_transaction", model_key="transactions",
+        record_id=505, before={"status": "ACCEPTED", "amount": "1"}, after={"status": "SUCCESS", "amount": "1"},
     )
-    assert resp.status_code == 400
+    row = (await brand_db.execute(text("SELECT object_id, object_repr, action_flag, change_message, content_type_id, user_id FROM django_admin_log"))).one()
+    assert row.object_id == "505" and row.action_flag == 2 and row.user_id == user_id and row.content_type_id == 29
+    assert row.change_message == '[{"changed": {"fields": ["status"]}}]'
 
 
-@pytest.mark.parametrize("weak", ["short1", "onlyletterslongenough", "123456789012345", "viewer-viewer-1"])
-async def test_change_password_enforces_policy(raw_client, seeded_admin_user, weak):
-    tokens = await _tokens(raw_client, "viewer@example.com")
-    resp = await raw_client.post(
-        "/auth/change-password", json={"current_password": PASSWORD, "new_password": weak}, headers=_bearer(tokens)
+async def test_audit_failure_never_raises(monkeypatch):
+    def broken(brand_id):
+        raise ConnectionError("db down")
+
+    monkeypatch.setattr(audit_service, "get_tenant_sessionmaker", broken)
+    await audit_service.write_record_change_audit(
+        admin_user_id=1, brand_id="ampay", action="create_record", model_key="banks", record_id=1, before={}, after={},
     )
-    assert resp.status_code == 422
 
 
-# --- Staff management ---
-
-
-async def test_staff_endpoints_forbidden_for_non_superuser(raw_client, seeded_admin_user):
-    tokens = await _tokens(raw_client, "viewer@example.com")
-    assert (await raw_client.get("/staff/users", headers=_bearer(tokens))).status_code == 403
-
-
-async def test_superuser_creates_staff_and_grants_brand_access(raw_client, seeded_superuser):
-    tokens = await _tokens(raw_client, "root@example.com")
-    resp = await raw_client.post(
-        "/staff/users",
-        json={
-            "email": "Ops@Example.com", "full_name": "Ops", "password": "ops-passphrase-2026",
-            "brand_access": {"rajapay": "operator"},
-        },
-        headers=_bearer(tokens),
+async def test_audit_masks_secrets(brand_db):
+    user_id = await add_user(brand_db, "alice")
+    await audit_service.write_record_change_audit(
+        admin_user_id=user_id, brand_id="ampay", action="update_record", model_key="merchants", record_id=2,
+        before={"private_key": "old"}, after={"private_key": "new"},
     )
-    assert resp.status_code == 201, resp.text
-    created = resp.json()
-    assert created["email"] == "ops@example.com"
-    assert created["brand_access"] == {"rajapay": "operator"}
-
-    login = await _login(raw_client, "ops@example.com", "ops-passphrase-2026")
-    assert [(b["brand_id"], b["role"]) for b in login.json()["available_brands"]] == [("rajapay", "operator")]
-
-    resp = await raw_client.put(
-        f"/staff/users/{created['id']}/brand-access/ampay", json={"role": "viewer"}, headers=_bearer(tokens)
-    )
-    assert resp.json()["brand_access"] == {"rajapay": "operator", "ampay": "viewer"}
-    resp = await raw_client.put(
-        f"/staff/users/{created['id']}/brand-access/rajapay", json={"role": None}, headers=_bearer(tokens)
-    )
-    assert resp.json()["brand_access"] == {"ampay": "viewer"}
-
-
-async def test_staff_create_rejects_duplicate_weak_password_and_unknown_brand(raw_client, seeded_superuser):
-    tokens = await _tokens(raw_client, "root@example.com")
-    base = {"full_name": "X", "password": "ops-passphrase-2026"}
-    ok = await raw_client.post("/staff/users", json={**base, "email": "x@example.com"}, headers=_bearer(tokens))
-    assert ok.status_code == 201
-    dup = await raw_client.post("/staff/users", json={**base, "email": "X@example.com"}, headers=_bearer(tokens))
-    assert dup.status_code == 409
-    weak = await raw_client.post(
-        "/staff/users", json={"email": "y@example.com", "full_name": "Y", "password": "weak"}, headers=_bearer(tokens)
-    )
-    assert weak.status_code == 422
-    bad_brand = await raw_client.post(
-        "/staff/users", json={**base, "email": "z@example.com", "brand_access": {"nope": "viewer"}}, headers=_bearer(tokens)
-    )
-    assert bad_brand.status_code == 404
-
-
-async def test_deactivating_user_kills_refresh_and_login(raw_client, seeded_superuser, seeded_admin_user):
-    admin = await _tokens(raw_client, "root@example.com")
-    victim = await _tokens(raw_client, "viewer@example.com")
-    resp = await raw_client.patch(
-        f"/staff/users/{seeded_admin_user.id}", json={"is_active": False}, headers=_bearer(admin)
-    )
-    assert resp.status_code == 200
-    assert (await raw_client.post("/auth/refresh", json={"refresh_token": victim["refresh_token"]})).status_code == 401
-    assert (await _login(raw_client, "viewer@example.com")).status_code == 401
-
-
-async def test_superuser_cannot_deactivate_or_demote_self(raw_client, seeded_superuser):
-    tokens = await _tokens(raw_client, "root@example.com")
-    for body in ({"is_active": False}, {"is_superuser": False}):
-        resp = await raw_client.patch(f"/staff/users/{seeded_superuser.id}", json=body, headers=_bearer(tokens))
-        assert resp.status_code == 400
-
-
-async def test_cannot_demote_last_active_superuser(raw_client, seeded_superuser, control_plane_session):
-    tokens = await _tokens(raw_client, "root@example.com")
-    other = AdminUser(
-        email="second@example.com", password_hash=hash_password(PASSWORD), is_active=True, is_superuser=True
-    )
-    control_plane_session.add(other)
-    await control_plane_session.commit()
-    # demoting the other superuser is fine while root remains...
-    assert (
-        await raw_client.patch(f"/staff/users/{other.id}", json={"is_superuser": False}, headers=_bearer(tokens))
-    ).status_code == 200
-    # ...but deactivating the only remaining one (self) is blocked by the self-guard.
-    assert (
-        await raw_client.patch(f"/staff/users/{seeded_superuser.id}", json={"is_active": False}, headers=_bearer(tokens))
-    ).status_code == 400
-
-
-async def test_reset_password_and_unlock(raw_client, seeded_superuser, seeded_admin_user):
-    from app.core.settings_env import env_settings
-
-    admin = await _tokens(raw_client, "root@example.com")
-    for _ in range(env_settings.login_max_failed_attempts):
-        await _login(raw_client, "viewer@example.com", "wrong")
-    assert (await _login(raw_client, "viewer@example.com")).status_code == 429
-
-    resp = await raw_client.post(
-        f"/staff/users/{seeded_admin_user.id}/reset-password",
-        json={"new_password": "reset-passphrase-2026"}, headers=_bearer(admin),
-    )
-    assert resp.status_code == 204
-    assert (await _login(raw_client, "viewer@example.com", "reset-passphrase-2026")).status_code == 200
-
-
-async def test_staff_actions_are_audited(raw_client, seeded_superuser, control_plane_session):
-    from sqlalchemy import select
-
-    from app.models.control_plane import AuditLog
-
-    tokens = await _tokens(raw_client, "root@example.com")
-    await raw_client.post(
-        "/staff/users",
-        json={"email": "a@example.com", "full_name": "A", "password": "audited-passphrase-1"},
-        headers=_bearer(tokens),
-    )
-    actions = (await control_plane_session.execute(select(AuditLog.action))).scalars().all()
-    assert "staff_create" in actions and "login" in actions
+    message = (await brand_db.execute(text("SELECT change_message FROM django_admin_log"))).scalar_one()
+    assert "old" not in message and "new" not in message

@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.services import audit_service, cascade_write_service
 from app.services.cascade_write_service import CASCADE_EDITABLE_FIELDS, ITEM_EDITABLE_FIELDS
 
@@ -64,7 +63,6 @@ async def create_cascade(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     try:
@@ -78,7 +76,6 @@ async def create_cascade(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="create_cascade",
@@ -98,7 +95,6 @@ async def update_cascade(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     if not values:
@@ -121,7 +117,6 @@ async def update_cascade(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_cascade",
@@ -141,7 +136,6 @@ async def create_cascade_item(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     try:
@@ -158,7 +152,6 @@ async def create_cascade_item(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="create_cascade_item",
@@ -178,7 +171,6 @@ async def update_cascade_item(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     if not values:
@@ -201,7 +193,6 @@ async def update_cascade_item(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_cascade_item",
@@ -220,7 +211,6 @@ async def delete_cascade_item(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> None:
     try:
         before = await cascade_write_service.delete_cascade_item(tenant_session, pk=pk)
@@ -233,7 +223,6 @@ async def delete_cascade_item(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="delete_cascade_item",

@@ -83,7 +83,7 @@ its own project phase, not a follow-up PR.
 backend/    FastAPI service (see backend/README below via `app/` docstrings)
 frontend/   Next.js admin UI (workspace switcher, generic tables, dashboard)
 scripts/    seed_tenant_db.py (throwaway local Postgres schema+data)
-backend/scripts/  bootstrap_admin_user.py (create the first superuser)
+
 docker-compose.yml   full local stack: control-plane PG, 3 tenant PGs,
                       Vault (dev mode), backend, frontend
 ```
@@ -99,18 +99,14 @@ uv venv && uv pip install -e ".[dev]"
 # Point Vault, write dev secrets (see the Vault CLI commands used during
 # this build for an example — admin-panel/auth and brand-config/<brand>/db
 # KV-v2 paths), then:
-uv run alembic -c alembic_control_plane.ini upgrade head
 uv run python ../scripts/seed_tenant_db.py ampay
-uv run python scripts/bootstrap_admin_user.py you@example.com   # prompts for a password (12+ chars, letters+digits)
 uv run uvicorn app.main:app --reload
 ```
 
-Or, with the compose stack (control-plane migrations run automatically through the one-shot
-`migrate` service before the backend starts; set `REDIS_HOST_PORT=16379` if 6379 is taken):
+Or, with the compose stack (set `REDIS_HOST_PORT=16379` if 6379 is taken):
 
 ```bash
 docker compose up -d --build
-docker compose exec backend python scripts/bootstrap_admin_user.py you@company.com
 ```
 
 Or, for a quick local run without Vault: copy `backend/.env.example` to
@@ -127,30 +123,40 @@ Frontend: see `frontend/README.md`.
 
 ## Authentication
 
-Staff accounts exist only in the control-plane DB (`admin_user`,
-`brand_access`) — there are no built-in credentials anywhere in code or
-config. The first superuser is created with `backend/scripts/bootstrap_admin_user.py`
-(also available in the container: `docker compose exec backend python
-scripts/bootstrap_admin_user.py you@company.com`); everyone else is managed by
-a superuser under **Сотрудники** in the UI (`/staff/*` API).
+Same as the monoliths' Django admin — there is **no user database of our own**.
+A staff member logs in with their Django admin **username + password**; the
+credentials are checked against each brand's own `auth_user` (PBKDF2, exactly
+what `django.contrib.auth` stores), and every brand where the account is
+`is_active and is_staff` appears as an available workspace. Creating users,
+resetting passwords and deactivating them happens where it always did: in the
+monolith's admin.
 
-- Argon2 password hashes (transparently re-hashed on login if parameters
-  change); password policy: 12+ chars, letters and digits.
-- Account lockout: 5 failed attempts locks the account for 15 minutes
-  (`LOGIN_MAX_FAILED_ATTEMPTS` / `LOGIN_LOCKOUT_MINUTES`); superuser can unlock.
-- Login timing is equalised for unknown emails (no user enumeration).
-- Changing/resetting a password or deactivating a user bumps `token_version`,
-  revoking that user's refresh tokens; access tokens live 15 minutes.
-- Staff-management calls re-check the DB (active superuser), not just the JWT.
-- Every login, failure, lockout and staff change is written to `audit_log`.
-- In deployed environments `USE_LOCAL_ENV_SECRETS` must be false: the JWT key
-  comes from Vault and is rejected if shorter than 32 chars or a placeholder.
+- **Role per brand** (from Django, no mapping tables): `is_superuser` →
+  `superadmin`; any `add_/change_/delete_` permission (direct or via a group) →
+  `operator`; otherwise `viewer` (read-only).
+- **Sessions:** two-step login (`/auth/login` → `/auth/select-brand`), 15-min
+  access + 7-day refresh JWTs. Refresh re-reads `auth_user`, so deactivating a
+  user, changing their password or changing their permissions in the monolith
+  takes effect at the next refresh at the latest.
+- **Brute force:** the monolith's admin has none; here 5 failures lock a login
+  name for 15 minutes (counter in Redis with a TTL — `LOGIN_MAX_FAILED_ATTEMPTS`
+  / `LOGIN_LOCKOUT_MINUTES`; in-process fallback if Redis is down). Per-IP limits
+  belong on the reverse proxy.
+- **Audit:** every write is logged (`audit` logger, JSON) and inserted into the
+  brand's `django_admin_log` under the staff member's real `auth_user.id`, in
+  Django's own change-message format — so it shows in the monolith's admin
+  History next to changes made there.
+- **Secrets:** `USE_LOCAL_ENV_SECRETS=false` in any deployed environment; the JWT
+  key (`JWT_SECRET_KEY`) comes from Vault and is rejected if shorter than 32 chars
+  or a placeholder.
 - Vault is wired like the monoliths' `vault_loader.py`: `VAULT_ADDR`,
   `VAULT_USERNAME`/`VAULT_PASSWORD` (userpass; or `VAULT_TOKEN`), `VAULT_MOUNT`
   (default `backend`), KV-v2 paths `settings`/`urls`/`api_keys` with the
   monoliths' own key names — brand-suffixed (`HOST_AMPAY`) or plain (`DB_HOST`).
-  Verified end-to-end against a dev Vault: all three brands load their DB/Redis/
-  Celery config from it. The key table is in `backend/app/core/config.py`.
+  The key table is in `backend/app/core/config.py`.
+- **Parked, not deleted:** the earlier design with its own control-plane DB,
+  staff management (`/staff`) and password change lives in
+  `backend/disabled/control_plane/` and `frontend/disabled/staff-management/`.
 
 ## What was verified in this build
 

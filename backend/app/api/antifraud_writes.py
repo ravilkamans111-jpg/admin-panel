@@ -14,7 +14,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.services import antifraud_write_service, audit_service
 from app.services.antifraud_write_service import EDITABLE_FIELDS
 
@@ -38,7 +37,6 @@ async def update_antifraud_block(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     values = body.to_values()
     if not values:
@@ -61,7 +59,6 @@ async def update_antifraud_block(
     await tenant_session.commit()
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="update_antifraud_block",

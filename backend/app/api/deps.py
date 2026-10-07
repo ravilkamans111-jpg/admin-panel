@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.rbac import role_at_least
 from app.core.roles import BrandRole
 from app.core.security import DecodedToken, TokenError, TokenScope, decode_token
-from app.db.control_plane import get_control_plane_session
 from app.db.tenant_registry import get_tenant_sessionmaker
 
 bearer_scheme = HTTPBearer(auto_error=True)
@@ -103,9 +102,3 @@ def require_role(minimum: BrandRole):
         return current_user
 
     return _check
-
-
-async def require_control_plane_session(
-    session: AsyncSession = Depends(get_control_plane_session),
-) -> AsyncSession:
-    return session

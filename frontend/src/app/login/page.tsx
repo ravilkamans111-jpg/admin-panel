@@ -7,7 +7,7 @@ import { sessionStore, STORAGE_KEYS } from "@/lib/storage";
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -17,13 +17,13 @@ export default function LoginPage() {
     setError(null);
     setSubmitting(true);
     try {
-      const data = await login(email, password);
+      const data = await login(username, password);
       sessionStore.set(STORAGE_KEYS.preAuthToken, data.pre_auth_token);
       sessionStore.set(STORAGE_KEYS.availableBrands, JSON.stringify(data.available_brands));
       router.push("/select-brand");
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
-        setError("Неверный email или пароль.");
+        setError("Неверный логин или пароль.");
       } else if (err instanceof ApiError && err.status === 429) {
         setError("Слишком много неудачных попыток. Повторите позже или обратитесь к администратору.");
       } else {
@@ -50,16 +50,16 @@ export default function LoginPage() {
             </div>
           )}
           <div>
-            <label htmlFor="email" className="mb-1 block text-sm font-medium">
-              Электронная почта
+            <label htmlFor="username" className="mb-1 block text-sm font-medium">
+              Логин
             </label>
             <input
-              id="email"
-              type="email"
+              id="username"
+              type="text"
               required
-              autoComplete="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
               className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-accent"
             />
           </div>

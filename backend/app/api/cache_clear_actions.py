@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import CurrentUser, get_tenant_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
-from app.db.control_plane import get_control_plane_session
 from app.services import audit_service, cache_clear_actions_service
 
 router = APIRouter(prefix="/admin/payment-methods-cache", tags=["cache-clear-actions"])
@@ -35,7 +34,6 @@ async def clear_cache_by_currency(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     try:
         currencies = await cache_clear_actions_service.clear_cache_by_currency(
@@ -47,7 +45,6 @@ async def clear_cache_by_currency(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="clear_cache_by_currency",
@@ -66,7 +63,6 @@ async def clear_cache_by_merchant(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_session),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     try:
         merchants = await cache_clear_actions_service.clear_cache_by_merchant(
@@ -78,7 +74,6 @@ async def clear_cache_by_merchant(
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="clear_cache_by_merchant",
@@ -95,12 +90,10 @@ async def clear_cache_by_merchant(
 async def clear_all_payment_methods_cache(
     request: Request,
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
-    control_plane_session: AsyncSession = Depends(get_control_plane_session),
 ) -> dict:
     await cache_clear_actions_service.clear_all_payment_methods_cache(current_user.brand_id)
 
     await audit_service.write_record_change_audit(
-        control_plane_session,
         admin_user_id=current_user.admin_user_id,
         brand_id=current_user.brand_id,
         action="clear_all_payment_methods_cache",
