@@ -12,13 +12,10 @@ The source's 3-way branch (verbatim, from `transaction_save.py`):
      `update_company_balance`, then `update_limits` (a documented no-op —
      see `balance_math.apply_update_limits_noop`).
 
+Conversion statistics live in `app.services.conversion_statistics_service`.
+
 Deliberately NOT ported (see gaps flagged by the source extraction and the
 project's phased-write-path plan):
-  - Conversion statistics update — the source itself treats this as
-    non-fatal (broad `except Exception: log and continue`, transaction
-    save still succeeds), and its `get_or_create` path has an
-    unread-model-defaults gap (`conversion_statistic/models.py` was not in
-    the verified extraction). Add once that gap is closed.
   - Redis cache invalidation / Celery merchant callbacks — confirmed NOT
     part of this save path in source (they belong to `PaymentMethodCompany`/
     `MerchantPaymentMethod.save()` and a separate bulk admin action,
@@ -52,6 +49,7 @@ from app.models.tenant import (
 )
 from app.registry.admin_models import get_config
 from app.repositories.admin_repository import row_to_dict
+from app.services import conversion_statistics_service
 from app.services.balance_math import (
     TransactionSnapshot,
     apply_company_balance_update,
@@ -205,3 +203,8 @@ async def run_save_side_effects(
         )
         # `update_limits` is a documented no-op in source — not called at
         # all here since it has no observable effect (see balance_math.py).
+
+    if not is_admin_merchant:
+        await conversion_statistics_service.update_for_admin_edit(
+            session, brand_id=brand_id, txn=txn, old_snapshot=old_snapshot
+        )

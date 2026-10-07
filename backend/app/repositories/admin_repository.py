@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import JSON, String, Text, func, or_, select
+from sqlalchemy import JSON, Boolean, Date, DateTime, String, Text, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -120,12 +121,55 @@ def _apply_filters(stmt: Select, config: AdminModelConfig, *, search: str | None
             stmt = stmt.where(or_(*search_clauses))
 
     for field_name, raw_value in filters.items():
-        if field_name not in config.list_filter:
-            raise ValueError(f"'{field_name}' is not a filterable field for {config.key}")
-        column = _column(model, field_name)
-        stmt = stmt.where(column == _cast_filter_value(column, raw_value))
+        stmt = _apply_one_filter(stmt, config, field_name, raw_value)
 
     return stmt
+
+
+def _int_list(raw: str) -> list[int]:
+    try:
+        return [int(part) for part in raw.split(",") if part.strip() != ""]
+    except ValueError:
+        raise ValueError(f"Invalid id list: {raw}") from None
+
+
+def _date_bound(column, raw: str, *, upper: bool):
+    """Returns (value, operator) for one end of a date-range filter. A bare
+    date as the upper bound on a datetime column means "through that whole
+    day", so it becomes `< next midnight`."""
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        raise ValueError(f"Invalid date: {raw}") from None
+    bare_date = len(raw) <= 10
+    if isinstance(column.type, Date) and not isinstance(column.type, DateTime):
+        return parsed.date(), (lambda c, v: c <= v) if upper else (lambda c, v: c >= v)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    if upper and bare_date:
+        return parsed + timedelta(days=1), lambda c, v: c < v
+    return parsed, (lambda c, v: c <= v) if upper else (lambda c, v: c >= v)
+
+
+def _apply_one_filter(stmt: Select, config: AdminModelConfig, name: str, raw: str) -> Select:
+    model = config.model
+    if name in config.virtual_filters:
+        ids = _int_list(raw)
+        return stmt.where(config.virtual_filters[name].build(ids)) if ids else stmt
+    for suffix, upper in (("__gte", False), ("__lte", True)):
+        if name.endswith(suffix) and name[: -len(suffix)] in config.date_filters:
+            column = _column(model, name[: -len(suffix)])
+            value, compare = _date_bound(column, raw, upper=upper)
+            return stmt.where(compare(column, value))
+    if name not in config.list_filter:
+        raise ValueError(f"'{name}' is not a filterable field for {config.key}")
+    column = _column(model, name)
+    values = [part for part in raw.split(",") if part != ""]
+    if not values:
+        return stmt
+    if len(values) == 1:
+        return stmt.where(column == _cast_filter_value(column, values[0]))
+    return stmt.where(column.in_([_cast_filter_value(column, v) for v in values]))
 
 
 async def run_list_query(
@@ -222,7 +266,7 @@ async def _enrich_fk_labels(
         pk_column = _column(target_config.model, target_config.pk_field)
         instances = (await session.execute(select(target_config.model).where(pk_column.in_(ids)))).scalars().all()
         target_rows = [row_to_dict(instance) for instance in instances]
-        if target_config.fk_fields and _depth < 2:
+        if target_config.fk_fields and _depth < 2 and "_label}" in target_config.str_template:
             await _enrich_fk_labels(session, target_config, target_rows, _depth=_depth + 1)
         label_by_id = {
             target_row[target_config.pk_field]: _render_str_template(target_config.str_template, target_row)
@@ -304,3 +348,72 @@ def row_to_dict(instance: Any) -> dict[str, Any]:
             value = value.isoformat()
         result[column.key] = value
     return result
+
+
+OPTION_SCAN_LIMIT = 5000
+DISTINCT_CHOICE_LIMIT = 50
+
+
+async def list_options(
+    session: AsyncSession,
+    config: AdminModelConfig,
+    *,
+    search: str | None = None,
+    ids: list[int] | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """`[{id, label}]` for pickers/filters, labelled by `config.str_template`.
+
+    Search runs over the *rendered* labels (so "ampayadmin" finds the merchant
+    "ampayadmin111: PROD" even though the username lives on another table) in
+    a window of the newest `OPTION_SCAN_LIMIT` rows — every directory table in
+    these brands is far smaller than that."""
+    if not config.str_template:
+        raise ValueError(f"'{config.key}' has no label template and can't be used as an option source")
+    pk_column = _column(config.model, config.pk_field)
+    stmt = select(config.model)
+    if ids:
+        stmt = stmt.where(pk_column.in_(ids))
+    else:
+        stmt = stmt.order_by(pk_column.desc()).limit(OPTION_SCAN_LIMIT)
+    rows = [row_to_dict(r) for r in (await session.execute(stmt)).scalars().all()]
+    await _enrich_fk_labels(session, config, rows)
+    options = [{"id": r[config.pk_field], "label": _render_str_template(config.str_template, r)} for r in rows]
+    if search and not ids:
+        needle = search.strip().lower()
+        options = [o for o in options if needle in o["label"].lower() or needle == str(o["id"])]
+    options.sort(key=lambda o: o["label"].lower())
+    return options[:limit]
+
+
+async def build_filter_descriptors(session: AsyncSession, config: AdminModelConfig) -> list[dict[str, Any]]:
+    """What the list page needs to render each filter control: choice lists for
+    low-cardinality text columns, bool toggles, FK pickers, date ranges."""
+    descriptors: list[dict[str, Any]] = []
+    for name in config.list_filter:
+        column = _column(config.model, name)
+        if name in config.fk_fields:
+            descriptors.append({"field": name, "kind": "fk", "target": config.fk_fields[name]})
+        elif isinstance(column.type, Boolean):
+            descriptors.append({
+                "field": name, "kind": "choice",
+                "options": [{"value": "true", "label": "Да"}, {"value": "false", "label": "Нет"}],
+            })
+        elif isinstance(column.type, (String, Text)):
+            rows = await session.execute(
+                select(column).where(column.is_not(None)).distinct().order_by(column).limit(DISTINCT_CHOICE_LIMIT + 1)
+            )
+            values = [v for (v,) in rows.all() if v != ""]
+            if len(values) <= DISTINCT_CHOICE_LIMIT:
+                descriptors.append({
+                    "field": name, "kind": "choice", "options": [{"value": v, "label": v} for v in values],
+                })
+            else:
+                descriptors.append({"field": name, "kind": "text"})
+        else:
+            descriptors.append({"field": name, "kind": "text"})
+    for name, virtual in config.virtual_filters.items():
+        descriptors.append({"field": name, "kind": "fk", "target": virtual.target})
+    for name in config.date_filters:
+        descriptors.append({"field": name, "kind": "date"})
+    return descriptors

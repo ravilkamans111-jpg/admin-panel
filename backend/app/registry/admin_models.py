@@ -27,11 +27,15 @@ layers depend on it, never the other way around.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import DeclarativeBase
 
+from app.core.rbac import role_at_least
+from app.core.roles import BrandRole
 from app.models.tenant import (
     AntiFraudBlockedMerchantUsers,
     Appeal,
@@ -89,6 +93,23 @@ def _all_fields(model: type[DeclarativeBase]) -> list[str]:
     return list(model.__table__.columns.keys())
 
 
+SENSITIVE_MASK = "••••••••"
+# Roles below this see `AdminModelConfig.sensitive_fields` as SENSITIVE_MASK.
+SENSITIVE_MIN_ROLE = BrandRole.BRAND_ADMIN
+
+
+@dataclass(frozen=True, slots=True)
+class VirtualFilter:
+    """A list filter on something that isn't a column of the listed model
+    (e.g. a transaction's *partner company*, two joins away) — mirrors the
+    source admin's `payment_method_company__company__name`-style filters.
+    `target` is the registry key of the model the operator picks records of;
+    `build(ids)` returns the WHERE clause for the listed model."""
+
+    target: str
+    build: Callable[[list[int]], Any]
+
+
 @dataclass(frozen=True, slots=True)
 class AdminModelConfig:
     key: str
@@ -132,6 +153,14 @@ class AdminModelConfig:
     # PaymentMethodCompany, whose source `__str__` needs two joins) are
     # deliberately left as plain id inputs rather than faked.
     fk_fields: dict[str, str] = field(default_factory=dict)
+    # Date/datetime columns offered as a from–to range filter
+    # (`?<field>__gte=…&<field>__lte=…`), like the source's DateRangeFilter.
+    date_filters: list[str] = field(default_factory=list)
+    virtual_filters: dict[str, VirtualFilter] = field(default_factory=dict)
+    # Columns whose value is masked for roles below `SENSITIVE_MIN_ROLE`
+    # in list/detail responses (still writable; the mask placeholder is
+    # ignored on save so a round-tripped form can't overwrite the secret).
+    sensitive_fields: list[str] = field(default_factory=list)
 
     @property
     def app_label(self) -> str:
@@ -181,7 +210,30 @@ register(
             "partner_income", "pure_our_income", "amount_after_commission", "p2p_card", "tracker_id",
             "status_addition_info", "addition_info", "callback_url", "original_tracker_id",
         ],
-        list_filter=["status", "direction", "merchant_id", "payment_method_company_id"],
+        list_filter=["status", "direction", "merchant_id"],
+        date_filters=["date_create", "date_update"],
+        virtual_filters={
+            "company_id": VirtualFilter(
+                "companies",
+                lambda ids: Transaction.payment_method_company_id.in_(
+                    select(PaymentMethodCompany.id).where(PaymentMethodCompany.company_id.in_(ids))
+                ),
+            ),
+            "payment_method_id": VirtualFilter(
+                "payment-methods",
+                lambda ids: Transaction.payment_method_company_id.in_(
+                    select(PaymentMethodCompany.id).where(PaymentMethodCompany.payment_method_id.in_(ids))
+                ),
+            ),
+            "currency_id": VirtualFilter(
+                "currencies",
+                lambda ids: Transaction.payment_method_company_id.in_(
+                    select(PaymentMethodCompany.id)
+                    .join(PaymentMethod, PaymentMethod.id == PaymentMethodCompany.payment_method_id)
+                    .where(PaymentMethod.currency_id.in_(ids))
+                ),
+            ),
+        },
         search_fields=["tracker_id", "partner_system_id", "merchant_system_id", "merchant_client_id"],
         default_ordering=["-date_create"],
         # Matches TransactionAdminForm on EDIT (not create) — usdt_fixed_course
@@ -216,6 +268,7 @@ register(
         verbose_name_plural="Сеттлменты",
         list_display=_all_fields(Settlements),
         list_filter=["status", "settl_type"],
+        date_filters=["date_create", "date_update"],
         search_fields=["transaction_id", "wallet", "tracker_link", "tg_id"],
         default_ordering=["-date_create"],
         editable_fields=[
@@ -253,6 +306,7 @@ register(
         verbose_name_plural="Антифрод-блокировки",
         list_display=_all_fields(AntiFraudBlockedMerchantUsers),
         list_filter=["permanent_ban", "second_chance"],
+        date_filters=["date_create"],
         search_fields=["merchant_name", "user_id"],
         default_ordering=["-date_create"],
         editable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
@@ -274,6 +328,7 @@ register(
         list_display=_all_fields(Merchant),
         list_filter=["user_id"],
         search_fields=["name", "public_key", "project_url"],
+        sensitive_fields=["private_key"],
         editable_fields=["name", "public_key", "private_key", "transaction_id", "project_url"],
         creatable_fields=["name", "public_key", "private_key", "transaction_id", "project_url", "user_id"],
         creatable=True,
@@ -500,6 +555,9 @@ register(
         # never drives a write-picker) — just so list/detail views show the
         # partner company and method name instead of bare ids, matching
         # source list_display's `payment_method`/`company` columns.
+        # Label when this record is itself a picker/filter target (cascade
+        # items, floated percents, partner statistics): "<method> — <partner>".
+        str_template="{payment_method_id_label} — {company_id_label}",
         fk_fields={"company_id": "companies", "payment_method_id": "payment-methods"},
     )
 )
@@ -534,6 +592,7 @@ register(
         # creation) so, like Transaction.merchant_id, these only drive read
         # enrichment — list/detail views showing the merchant and method
         # name instead of bare ids, matching source list_display.
+        str_template="{merchant_id_label} — {payment_method_id_label}",
         fk_fields={
             "cascade_id": "payment-method-cascades",
             "merchant_id": "merchants",
@@ -600,6 +659,7 @@ register(
         list_display=_all_fields(CompanyMethodStatistics),
         list_filter=["payment_method_company_id"],
         default_ordering=["-date"],
+        fk_fields={"payment_method_company_id": "payment-method-companies"},
     )
 )
 
@@ -616,6 +676,7 @@ register(
         creatable_fields=["from_amount", "to_amount", "rate", "payment_method_company_id"],
         creatable=True,
         deletable=True,
+        fk_fields={"payment_method_company_id": "payment-method-companies"},
     )
 )
 
@@ -703,10 +764,13 @@ register(
         list_filter=["cascade_id", "is_active"],
         default_ordering=["priority"],
         editable_fields=["payment_method_company_id", "priority", "is_active"],
+        # `creatable` stays False on purpose: items are created from the cascade page
+        # (POST /admin/payment-method-cascades/{id}/items), which runs the method-match /
+        # unique-priority validation that the generic create endpoint would skip.
+        # `creatable_fields` is still the field allowlist that dedicated service uses.
         creatable_fields=["cascade_id", "payment_method_company_id", "priority", "is_active"],
-        creatable=True,
         deletable=True,
-        fk_fields={"cascade_id": "payment-method-cascades"},
+        fk_fields={"cascade_id": "payment-method-cascades", "payment_method_company_id": "payment-method-companies"},
     )
 )
 
@@ -827,7 +891,9 @@ register(
         verbose_name_plural="Конверсия по методам",
         list_display=_all_fields(ConversionStatisticsNew),
         list_filter=["payment_method_id"],
+        date_filters=["date_only"],
         default_ordering=["-date_only"],
+        fk_fields={"payment_method_id": "payment-methods"},
     )
 )
 
@@ -840,7 +906,9 @@ register(
         verbose_name_plural="Конверсия по партнёрам",
         list_display=_all_fields(ConversionStatisticsPartnersNew),
         list_filter=["payment_method_company_id"],
+        date_filters=["date_only"],
         default_ordering=["-date_only"],
+        fk_fields={"payment_method_company_id": "payment-method-companies"},
     )
 )
 
@@ -853,7 +921,9 @@ register(
         verbose_name_plural="Конверсия по мерчантам",
         list_display=_all_fields(ConversionStatisticsMerchantNew),
         list_filter=["merchant_payment_method_id"],
+        date_filters=["date_only"],
         default_ordering=["-date_only"],
+        fk_fields={"merchant_payment_method_id": "merchant-payment-methods"},
     )
 )
 
@@ -905,3 +975,13 @@ def config_to_dict(config: AdminModelConfig) -> dict[str, Any]:
         "str_template": config.str_template,
         "fk_fields": config.fk_fields,
     }
+
+
+def mask_row(config: AdminModelConfig, row: dict[str, Any], role: str | None) -> dict[str, Any]:
+    """Masks `config.sensitive_fields` unless `role` may see them. `role=None`
+    always masks (used for audit trails, which must never hold secrets)."""
+    if not config.sensitive_fields:
+        return row
+    if role is not None and role_at_least(role, SENSITIVE_MIN_ROLE):
+        return row
+    return {k: (SENSITIVE_MASK if k in config.sensitive_fields and v else v) for k, v in row.items()}

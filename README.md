@@ -105,6 +105,14 @@ uv run python scripts/bootstrap_admin_user.py you@example.com   # prompts for a 
 uv run uvicorn app.main:app --reload
 ```
 
+Or, with the compose stack (control-plane migrations run automatically through the one-shot
+`migrate` service before the backend starts; set `REDIS_HOST_PORT=16379` if 6379 is taken):
+
+```bash
+docker compose up -d --build
+docker compose exec backend python scripts/bootstrap_admin_user.py you@company.com
+```
+
 Or, for a quick local run without Vault: copy `backend/.env.example` to
 `backend/.env` (`USE_LOCAL_ENV_SECRETS=true`), start just the Postgres
 services, and skip the Vault steps above.

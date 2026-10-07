@@ -137,6 +137,17 @@ def get_brand_admin_public_key(brand_id: str) -> str | None:
     return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/transaction_admin", "admin_public_key")
 
 
+def get_brand_timezone(brand_id: str) -> str:
+    """Mirrors the source's `settings.TIME_ZONE` (Vault `APP_TIMEZONE`) — decides
+    which calendar day a transaction's conversion statistics belong to.
+    Defaults to UTC when a brand doesn't configure one."""
+    brand_key = brand_id.upper().replace("-", "_")
+    if env_settings.use_local_env_secrets:
+        return os.environ.get(f"BRAND_{brand_key}_TIMEZONE", "UTC")
+    vault = get_vault_client()
+    return vault.get_optional(BRAND_CONFIG_MOUNT, f"{brand_id}/transaction_admin", "timezone") or "UTC"
+
+
 def get_brand_bot_callback_url(brand_id: str) -> str | None:
     """Mirrors the source's `settings.BOT_CALLBACK_URL` — where
     `CallbacksService.send_message_to_tg_user` posts a Settlement's payload

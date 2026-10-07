@@ -13,6 +13,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.registry.admin_models import get_config, mask_row
 from app.repositories import control_plane_repository as repo
 
 
@@ -29,6 +30,11 @@ async def write_record_change_audit(
     extra: dict[str, Any] | None = None,
     ip_address: str | None = None,
 ) -> None:
+    config = get_config(model_key)
+    if config is not None:
+        # Audit trails must never hold secrets, whatever the actor's role.
+        before = mask_row(config, before, None) if before else before
+        after = mask_row(config, after, None) if after else after
     await repo.write_audit_log(
         control_plane_session,
         admin_user_id=admin_user_id,

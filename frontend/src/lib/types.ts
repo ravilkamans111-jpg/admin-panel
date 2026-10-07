@@ -77,3 +77,14 @@ export interface DashboardSummary {
 export interface ApiErrorBody {
   detail: string;
 }
+
+export interface OptionItem {
+  id: number;
+  label: string;
+}
+
+export type FilterDescriptor =
+  | { field: string; kind: "text" }
+  | { field: string; kind: "date" }
+  | { field: string; kind: "choice"; options: { value: string; label: string }[] }
+  | { field: string; kind: "fk"; target: string };

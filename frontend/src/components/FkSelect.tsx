@@ -1,29 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { fetchModelList } from "@/lib/api";
-import { useSchema } from "@/lib/schema-context";
+import { useEffect, useRef, useState } from "react";
+import { fetchOptions } from "@/lib/api";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import type { OptionItem } from "@/lib/types";
 
-/** Fills a `config.str_template` (e.g. "{name} — {default_personal_rate}%")
- * from a row's own fields, falling back to a bare id if a placeholder is
- * missing from the row (shouldn't happen for a well-formed template). */
-function renderTemplate(template: string, row: Record<string, unknown>): string {
-  return template.replace(/\{(\w+)\}/g, (_, key) => {
-    const value = row[key];
-    return value === null || value === undefined ? "" : String(value);
-  });
-}
-
-interface Option {
-  id: number | string;
-  label: string;
-}
+const inputClass =
+  "w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent";
 
 /**
- * Dropdown for a foreign-key field declared in `config.fk_fields` (backend:
- * `AdminModelConfig.fk_fields` in `app/registry/admin_models.py`). Loads the
- * target model's rows once and renders each as `str_template` text instead
- * of forcing the operator to type a raw id.
+ * Searchable single-value picker for a foreign-key field (backend:
+ * `AdminModelConfig.fk_fields`). Types-to-search over the target's rendered
+ * labels (`GET /admin/{target}/options`), so it works for any table size
+ * and finds records by what the operator sees ("ampayadmin", "We4Pay"),
+ * not by id. The value is the record id as a string ("" = nothing chosen).
  */
 export function FkSelect({
   targetKey,
@@ -36,64 +26,110 @@ export function FkSelect({
   onChange: (value: string) => void;
   required?: boolean;
 }) {
-  const { getConfig } = useSchema();
-  const targetConfig = getConfig(targetKey);
-  const [options, setOptions] = useState<Option[] | null>(null);
-  const [error, setError] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [options, setOptions] = useState<OptionItem[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedLabel, setSelectedLabel] = useState<string>("");
+  const debouncedQuery = useDebouncedValue(query, 250);
+  const rootRef = useRef<HTMLDivElement>(null);
 
+  // Resolve the current value's label (initial edit value, or after a pick).
   useEffect(() => {
+    if (!value) {
+      setSelectedLabel("");
+      return;
+    }
     let cancelled = false;
-    setOptions(null);
-    setError(false);
-    // Server caps page_size at 200 (see app.api.admin) — good enough for a
-    // picker dropdown; a target with more rows than that is an edge case
-    // this simple client-side picker doesn't handle (no search/pagination).
-    fetchModelList(targetKey, { page_size: 200 })
-      .then((res) => {
-        if (cancelled) return;
-        const template = targetConfig?.str_template ?? "[{id}]";
-        setOptions(
-          res.items.map((row) => ({
-            id: row.id as number | string,
-            label: renderTemplate(template, row),
-          }))
-        );
+    fetchOptions(targetKey, { ids: [value] })
+      .then((found) => {
+        if (!cancelled) setSelectedLabel(found[0]?.label ?? `#${value}`);
       })
       .catch(() => {
-        if (!cancelled) setError(true);
+        if (!cancelled) setSelectedLabel(`#${value}`);
       });
     return () => {
       cancelled = true;
     };
-  }, [targetKey, targetConfig?.str_template]);
+  }, [targetKey, value]);
 
-  if (error) {
-    // Fall back to a plain id input rather than blocking the form entirely.
-    return (
-      <input
-        required={required}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="ID"
-        className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-      />
-    );
-  }
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setLoading(true);
+    fetchOptions(targetKey, { search: debouncedQuery, limit: 30 })
+      .then((found) => {
+        if (!cancelled) setOptions(found);
+      })
+      .catch(() => {
+        if (!cancelled) setOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, debouncedQuery, targetKey]);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
 
   return (
-    <select
-      required={required}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={!options}
-      className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent disabled:opacity-60"
-    >
-      <option value="">{options ? "Не выбрано" : "Загрузка…"}</option>
-      {options?.map((opt) => (
-        <option key={opt.id} value={String(opt.id)}>
-          {opt.label}
-        </option>
-      ))}
-    </select>
+    <div ref={rootRef} className="relative">
+      <input
+        value={open ? query : selectedLabel}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => {
+          setQuery("");
+          setOpen(true);
+        }}
+        placeholder="Начните вводить для поиска…"
+        required={required && !value}
+        className={inputClass}
+        autoComplete="off"
+      />
+      {value && !open && (
+        <button
+          type="button"
+          onClick={() => onChange("")}
+          aria-label="Очистить"
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-[var(--text-muted)] hover:text-accent"
+        >
+          ✕
+        </button>
+      )}
+      {open && (
+        <ul className="card absolute z-20 mt-1 max-h-64 w-full overflow-y-auto py-1 text-sm shadow-lg">
+          {loading && <li className="px-3 py-1.5 text-[var(--text-muted)]">Поиск…</li>}
+          {!loading && options.length === 0 && <li className="px-3 py-1.5 text-[var(--text-muted)]">Ничего не найдено</li>}
+          {options.map((o) => (
+            <li key={o.id}>
+              <button
+                type="button"
+                onClick={() => {
+                  onChange(String(o.id));
+                  setSelectedLabel(o.label);
+                  setOpen(false);
+                }}
+                className={`block w-full px-3 py-1.5 text-left hover:bg-black/5 dark:hover:bg-white/5 ${
+                  String(o.id) === value ? "text-accent" : ""
+                }`}
+              >
+                {o.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

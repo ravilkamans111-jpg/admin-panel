@@ -2,9 +2,11 @@ import { localStore, STORAGE_KEYS } from "./storage";
 import type {
   AdminModelConfig,
   DashboardSummary,
+  FilterDescriptor,
   ListResponse,
   LoginResponse,
   MeResponse,
+  OptionItem,
   SelectBrandResponse,
   StaffUser,
 } from "./types";
@@ -518,4 +520,58 @@ export function setStaffBrandAccess(id: number, brandId: string, role: string | 
     method: "PUT",
     body: { role },
   });
+}
+
+// ---------------------------------------------------------------------------
+// List filters, searchable pickers, CSV export (generic admin engine).
+// ---------------------------------------------------------------------------
+
+export function fetchFilterDescriptors(key: string): Promise<FilterDescriptor[]> {
+  return authedFetch<FilterDescriptor[]>(`/admin/${key}/filter-options`);
+}
+
+/** `[{id,label}]` for a model's label template — drives searchable pickers
+ * and FK filters. `ids` resolves already-selected values back to labels. */
+export function fetchOptions(
+  key: string,
+  params: { search?: string; ids?: Array<number | string>; limit?: number }
+): Promise<OptionItem[]> {
+  const query = new URLSearchParams();
+  if (params.search) query.set("search", params.search);
+  if (params.ids && params.ids.length) query.set("ids", params.ids.join(","));
+  if (params.limit) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return authedFetch<OptionItem[]>(`/admin/${key}/options${qs ? `?${qs}` : ""}`);
+}
+
+/** Downloads the whole filtered list as CSV (same filters/search/ordering as
+ * the table) and hands it to the browser as a file. */
+export async function downloadCsv(
+  key: string,
+  params: Record<string, string | number | undefined>
+): Promise<void> {
+  const query = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== "") query.set(k, String(v));
+  });
+  const path = `/admin/${key}/export${query.toString() ? `?${query.toString()}` : ""}`;
+
+  let token = localStore.get(STORAGE_KEYS.accessToken);
+  let res = await rawFetch(path, { token });
+  if (res.status === 401) {
+    const refreshed = await tryRefresh();
+    if (!refreshed) throw new AuthExpiredError();
+    token = refreshed.access_token;
+    res = await rawFetch(path, { token });
+  }
+  if (!res.ok) throw new ApiError(res.status, await parseErrorBody(res));
+
+  const url = URL.createObjectURL(await res.blob());
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${key}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
 }

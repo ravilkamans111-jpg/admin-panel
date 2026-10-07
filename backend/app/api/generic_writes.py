@@ -17,7 +17,7 @@ from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
 from app.core.roles import BrandRole
 from app.db.control_plane import get_control_plane_session
-from app.registry.admin_models import get_config
+from app.registry.admin_models import get_config, mask_row
 from app.services import audit_service, generic_write_service
 
 router = APIRouter(prefix="/admin", tags=["generic-writes"])
@@ -63,7 +63,7 @@ async def create_record(
         after=after,
         ip_address=request.client.host if request.client else None,
     )
-    return after
+    return mask_row(config, after, current_user.role)
 
 
 @router.patch("/{model_key}/{pk}")
@@ -105,7 +105,7 @@ async def update_record(
         after=after,
         ip_address=request.client.host if request.client else None,
     )
-    return after
+    return mask_row(config, after, current_user.role)
 
 
 @router.delete("/{model_key}/{pk}", status_code=status.HTTP_204_NO_CONTENT)

@@ -7,6 +7,8 @@ import { useSchema } from "@/lib/schema-context";
 import {
   AuthExpiredError,
   ApiError,
+  downloadCsv,
+  fetchFilterDescriptors,
   fetchModelList,
   refreshMerchantBalances,
   sendTransactionCallbacks,
@@ -15,7 +17,9 @@ import {
 import { useAuth } from "@/lib/auth-context";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { DataTable } from "@/components/DataTable";
+import { ListFilters } from "@/components/ListFilters";
 import { humanizeFieldName, nameEnrichedFields } from "@/lib/format";
+import type { FilterDescriptor } from "@/lib/types";
 
 const PAGE_SIZE = 25;
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
@@ -52,6 +56,9 @@ export default function AdminModelListPage() {
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
   const [reloadToken, setReloadToken] = useState(0);
+  const [descriptors, setDescriptors] = useState<FilterDescriptor[]>([]);
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [sendingCallbacks, setSendingCallbacks] = useState(false);
   const [callbackMessage, setCallbackMessage] = useState<string | null>(null);
@@ -71,6 +78,19 @@ export default function AdminModelListPage() {
     setCallbackError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey]);
+
+  useEffect(() => {
+    if (!config) return;
+    let cancelled = false;
+    setDescriptors([]);
+    fetchFilterDescriptors(modelKey)
+      .then((d) => !cancelled && setDescriptors(d))
+      .catch(() => !cancelled && setDescriptors([]));
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modelKey, config]);
 
   useEffect(() => {
     if (!config) return;
@@ -130,6 +150,27 @@ export default function AdminModelListPage() {
       setRefreshError(err instanceof Error ? err.message : "Не удалось обновить балансы.");
     } finally {
       setRefreshing(false);
+    }
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await downloadCsv(modelKey, {
+        search: debouncedSearch || undefined,
+        ordering: ordering || undefined,
+        ...debouncedFilters,
+      });
+    } catch (err) {
+      if (err instanceof AuthExpiredError) {
+        logout();
+        router.replace("/login");
+        return;
+      }
+      setExportError(err instanceof Error ? err.message : "Не удалось выгрузить данные.");
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -225,6 +266,13 @@ export default function AdminModelListPage() {
           <p className="text-xs text-[var(--text-muted)]">{total.toLocaleString("ru-RU")} записей всего</p>
         </div>
         <div className="flex shrink-0 gap-2">
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-accent disabled:opacity-60"
+          >
+            {exporting ? "Выгрузка…" : "Экспорт CSV"}
+          </button>
           {BULK_ACTIONS_KEYS.has(modelKey) && (
             <Link
               href={`/admin/${modelKey}/bulk-actions`}
@@ -273,6 +321,12 @@ export default function AdminModelListPage() {
         </div>
       )}
 
+      {exportError && (
+        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
+          {exportError}
+        </div>
+      )}
+
       {callbackMessage && (
         <div className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
           Коллбэки обработаны: {callbackMessage}
@@ -299,18 +353,7 @@ export default function AdminModelListPage() {
             />
           </div>
         )}
-        {config.list_filter.map((field) => (
-          <div key={field}>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
-              {humanizeFieldName(field)}
-            </label>
-            <input
-              value={filters[field] ?? ""}
-              onChange={(e) => handleFilterChange(field, e.target.value)}
-              className="w-36 rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-            />
-          </div>
-        ))}
+        <ListFilters descriptors={descriptors} filters={filters} onChange={handleFilterChange} />
       </div>
 
       {error && (

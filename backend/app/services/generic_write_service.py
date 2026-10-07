@@ -29,7 +29,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import RecordNotFoundError
-from app.registry.admin_models import AdminModelConfig
+from app.registry.admin_models import SENSITIVE_MASK, AdminModelConfig
 from app.repositories.admin_repository import (
     apply_casted_field_updates,
     build_instance,
@@ -82,6 +82,8 @@ async def update_record(
     if instance is None:
         raise RecordNotFoundError(f"{config.verbose_name} {pk} не найден(а)")
     before = row_to_dict(instance)
+    # A secret shown masked must not be overwritten by the form echoing the mask back.
+    values = {k: v for k, v in values.items() if not (k in config.sensitive_fields and v == SENSITIVE_MASK)}
     apply_casted_field_updates(config, instance, values)
     _touch_timestamps(config, instance, is_create=False)
     await session.flush()
