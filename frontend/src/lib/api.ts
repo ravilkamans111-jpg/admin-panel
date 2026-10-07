@@ -587,3 +587,32 @@ export function createDjangoUser(values: {
 }): Promise<{ id: number; username: string }> {
   return authedFetch<{ id: number; username: string }>("/admin/users", { method: "POST", body: values });
 }
+
+export interface UserEditData {
+  user: {
+    id: number; username: string; first_name: string; last_name: string; email: string;
+    is_active: boolean; is_staff: boolean; is_superuser: boolean;
+    last_login: string | null; date_joined: string | null;
+    password: { algorithm: string; iterations?: number; salt?: string; hash?: string; summary?: string };
+  };
+  groups: { available: { id: number; label: string }[]; chosen: number[] };
+  permissions: { available: { id: number; label: string }[]; chosen: number[] };
+}
+
+export interface UserFormValues {
+  username: string; first_name: string; last_name: string; email: string;
+  is_active: boolean; is_staff: boolean; is_superuser: boolean;
+  groups: number[]; permissions: number[]; last_login: string | null; date_joined: string | null;
+}
+
+export function fetchUserEditData(id: string | number): Promise<UserEditData> {
+  return authedFetch<UserEditData>(`/admin/users/${id}/edit-data`);
+}
+
+export function saveUserForm(id: string | number, values: UserFormValues): Promise<{ id: number; username: string }> {
+  return authedFetch<{ id: number; username: string }>(`/admin/users/${id}`, { method: "PUT", body: values });
+}
+
+export function changeUserPassword(id: string | number, password1: string, password2: string): Promise<void> {
+  return authedFetch<void>(`/admin/users/${id}/password`, { method: "POST", body: { password1, password2 } });
+}

@@ -487,10 +487,11 @@ register(
         model=DjangoAuthUser,
         verbose_name="Пользователь",
         verbose_name_plural="Пользователи",
-        list_display=_all_fields(DjangoAuthUser),
+        list_display=["username", "email", "first_name", "last_name", "is_staff"],  # Django's default user changelist
         list_filter=["is_active", "is_staff", "is_superuser"],
         search_fields=["username", "email", "first_name", "last_name"],
         str_template="{username}",
+        default_ordering=["username"],
         editable_fields=["first_name", "last_name", "email", "is_active", "is_staff", "is_superuser"],
         field_labels={
             "id": "ID", "username": "Username", "first_name": "First name", "last_name": "Last name",
