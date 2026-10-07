@@ -92,10 +92,18 @@ async def get_filter_descriptors(session: AsyncSession, *, model_key: str) -> li
 
 
 async def get_options(
-    session: AsyncSession, *, model_key: str, search: str | None, ids: list[int] | None, limit: int
+    session: AsyncSession,
+    *,
+    model_key: str,
+    search: str | None,
+    ids: list[int] | None,
+    limit: int,
+    filters: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     try:
-        return await list_options(session, _config_or_404(model_key), search=search, ids=ids, limit=limit)
+        return await list_options(
+            session, _config_or_404(model_key), search=search, ids=ids, limit=limit, filters=filters
+        )
     except ValueError as exc:
         raise InvalidFilterError(str(exc)) from exc
 

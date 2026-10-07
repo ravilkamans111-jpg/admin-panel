@@ -20,11 +20,14 @@ export function FkSelect({
   value,
   onChange,
   required,
+  filters,
 }: {
   targetKey: string;
   value: string;
   onChange: (value: string) => void;
   required?: boolean;
+  /** Narrow the choices, e.g. `{ payment_method_id: 12 }` (like the monolith's cascade form). */
+  filters?: Record<string, string | number>;
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -57,7 +60,7 @@ export function FkSelect({
     if (!open) return;
     let cancelled = false;
     setLoading(true);
-    fetchOptions(targetKey, { search: debouncedQuery, limit: 30 })
+    fetchOptions(targetKey, { search: debouncedQuery, limit: 30, filters })
       .then((found) => {
         if (!cancelled) setOptions(found);
       })
@@ -70,7 +73,8 @@ export function FkSelect({
     return () => {
       cancelled = true;
     };
-  }, [open, debouncedQuery, targetKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, debouncedQuery, targetKey, JSON.stringify(filters ?? {})]);
 
   useEffect(() => {
     function onDocClick(e: MouseEvent) {

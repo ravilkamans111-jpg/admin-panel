@@ -52,6 +52,7 @@ async def filter_options(
 @router.get("/{model_key}/options")
 async def options(
     model_key: str,
+    request: Request,
     search: str | None = Query(None),
     ids: str | None = Query(None, description="comma-separated ids to resolve to labels"),
     limit: int = Query(50, ge=1, le=200),
@@ -61,7 +62,12 @@ async def options(
     """`[{id, label}]` for searchable pickers and FK filters."""
     try:
         id_list = [int(i) for i in ids.split(",") if i.strip()] if ids else None
-        return await admin_service.get_options(session, model_key=model_key, search=search, ids=id_list, limit=limit)
+        # Anything beyond search/ids/limit narrows the choices (e.g. `?payment_method_id=12`
+        # on partner methods, like the monolith's cascade form does).
+        narrowing = {k: v for k, v in request.query_params.items() if k not in {"search", "ids", "limit"}}
+        return await admin_service.get_options(
+            session, model_key=model_key, search=search, ids=id_list, limit=limit, filters=narrowing
+        )
     except ValueError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
     except RecordNotFoundError as exc:

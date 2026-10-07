@@ -71,7 +71,7 @@ async def _seed_to_merchant_scenario(session: AsyncSession) -> dict:
     await session.flush()
 
     settlement_method = PaymentMethod(
-        name="settlement", direction="OUT", token="settle-out-usd", currency_id=currency.id
+        name="SETTLEMENT", direction="OUT", token="settle-out-usd", currency_id=currency.id
     )
     session.add(settlement_method)
     await session.flush()
@@ -179,3 +179,26 @@ async def test_create_settlement_requires_create_only_fields(session: AsyncSessi
         await settlement_write_service.create_or_update_settlement(
             session, brand_id="ampay", pk=None, values={"amount": Decimal("10.00")}
         )
+
+
+async def test_settlement_method_lookup_is_exact_like_the_source(session: AsyncSession):
+    """Source: `.get(payment_method__name='SETTLEMENT', currency, direction, sub_method=None, company)`."""
+    from sqlalchemy import select
+
+    from app.models.tenant import PaymentMethod, PaymentMethodCompany
+
+    await _seed_to_merchant_scenario(session)
+    pmc = (await session.execute(select(PaymentMethodCompany))).scalars().first()
+    method = await session.get(PaymentMethod, pmc.payment_method_id)
+    args = {"company_id": pmc.company_id, "currency_id": method.currency_id, "direction": "OUT"}
+
+    assert (await settlement_write_service.find_settlement_payment_method_company(session, **args)).id == pmc.id
+
+    method.sub_method = "X"  # a sub-method no longer matches (source filters sub_method IS NULL)
+    await session.flush()
+    assert await settlement_write_service.find_settlement_payment_method_company(session, **args) is None
+
+    method.sub_method = None
+    method.name = "settlement"  # lower-case no longer matches either (source uses .upper())
+    await session.flush()
+    assert await settlement_write_service.find_settlement_payment_method_company(session, **args) is None

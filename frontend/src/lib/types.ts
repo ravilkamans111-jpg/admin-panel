@@ -50,6 +50,13 @@ export interface AdminModelConfig {
   is_writable: boolean;
   str_template?: string | null;
   fk_fields: Record<string, string>;
+  field_labels: Record<string, string>;
+  list_editable: string[];
+  actions: { key: string; label: string }[];
+  hidden: boolean;
+  list_per_page: number;
+  /** Input kind per editable/creatable field: bool | int | decimal | datetime | json | text */
+  field_kinds: Record<string, string>;
 }
 
 export interface ListResponse<T = Record<string, unknown>> {

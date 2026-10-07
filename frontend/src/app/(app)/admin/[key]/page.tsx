@@ -13,15 +13,15 @@ import {
   refreshMerchantBalances,
   sendTransactionCallbacks,
   sendSettlementCallbacks,
+  updateRecordGeneric,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { DataTable } from "@/components/DataTable";
+import { DataTable, type CellEdit } from "@/components/DataTable";
 import { ListFilters } from "@/components/ListFilters";
-import { humanizeFieldName, nameEnrichedFields } from "@/lib/format";
+import { fieldCaption, nameEnrichedFields } from "@/lib/format";
 import type { FilterDescriptor } from "@/lib/types";
 
-const PAGE_SIZE = 25;
 const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements"]);
 
 // Models with a dedicated multi-select bulk-actions page at
@@ -29,11 +29,10 @@ const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements
 // / `app.services.cache_clear_actions_service`.
 const BULK_ACTIONS_KEYS = new Set(["merchants", "payment-method-companies", "merchant-payment-methods"]);
 
-// Models with a "send callback" bulk action on the list itself (row
-// checkboxes + a button), rather than a separate /bulk-actions page — see
-// `app.services.callback_service`, porting `TransactionAdmin
-// .send_callbacks_to_merchants` / `SettlementsAdmin.send_callbacks_to_tg_user`.
-const CALLBACK_KEYS = new Set(["transactions", "settlements"]);
+// The only list action implemented so far — "send callbacks" (see
+// `app.services.callback_service`); a model offers it by listing it in its
+// backend `actions` (transactions, settlements).
+const ACTION_SEND_CALLBACKS = "send_callbacks";
 
 export default function AdminModelListPage() {
   const params = useParams<{ key: string }>();
@@ -45,7 +44,13 @@ export default function AdminModelListPage() {
   const config = getConfig(modelKey);
 
   const [page, setPage] = useState(1);
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [action, setAction] = useState("");
+  const [edits, setEdits] = useState<Record<number, Record<string, CellEdit>>>({});
+  const [savingEdits, setSavingEdits] = useState(false);
+  const [editMessage, setEditMessage] = useState<string | null>(null);
+  const [editError, setEditError] = useState<string | null>(null);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [ordering, setOrdering] = useState<string | null>(null);
   const [items, setItems] = useState<Array<Record<string, unknown>>>([]);
@@ -64,15 +69,22 @@ export default function AdminModelListPage() {
   const [callbackMessage, setCallbackMessage] = useState<string | null>(null);
   const [callbackError, setCallbackError] = useState<string | null>(null);
 
-  const debouncedSearch = useDebouncedValue(search, 350);
+  const pageSize = config?.list_per_page ?? 20;
+  const debouncedSearch = search;
   const debouncedFilters = useDebouncedValue(filters, 350);
 
   // Reset paging/sorting state whenever the model changes.
   useEffect(() => {
     setPage(1);
     setSearch("");
+    setSearchInput("");
+    setAction("");
+    setEdits({});
+    setEditMessage(null);
+    setEditError(null);
     setFilters({});
-    setOrdering(config?.default_ordering?.[0] ?? null);
+    // A single default sort key shows its arrow; several keys are left to the server's default order.
+    setOrdering(config?.default_ordering?.length === 1 ? config.default_ordering[0] : null);
     setSelectedIds(new Set());
     setCallbackMessage(null);
     setCallbackError(null);
@@ -99,7 +111,7 @@ export default function AdminModelListPage() {
     setError(null);
     fetchModelList(modelKey, {
       page,
-      page_size: PAGE_SIZE,
+      page_size: pageSize,
       search: debouncedSearch || undefined,
       ordering: ordering || undefined,
       ...debouncedFilters,
@@ -131,7 +143,50 @@ export default function AdminModelListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [modelKey, config, page, debouncedSearch, debouncedFilters, ordering, reloadToken]);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total]);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [total, pageSize]);
+
+  const listEditable = useMemo(() => new Set(config?.list_editable ?? []), [config]);
+  const hasActions = (config?.actions.length ?? 0) > 0;
+
+  function handleEdit(rowId: number, field: string, value: CellEdit) {
+    setEditMessage(null);
+    setEditError(null);
+    setEdits((prev) => ({ ...prev, [rowId]: { ...prev[rowId], [field]: value } }));
+  }
+
+  async function handleSaveEdits() {
+    setSavingEdits(true);
+    setEditMessage(null);
+    setEditError(null);
+    const failures: string[] = [];
+    let saved = 0;
+    for (const [rowId, fields] of Object.entries(edits)) {
+      const body: Record<string, string | boolean | null> = {};
+      for (const [field, value] of Object.entries(fields)) {
+        body[field] = typeof value === "boolean" ? value : value === "" ? null : value;
+      }
+      try {
+        await updateRecordGeneric(modelKey, rowId, body);
+        saved += 1;
+      } catch (err) {
+        if (err instanceof AuthExpiredError) {
+          logout();
+          router.replace("/login");
+          return;
+        }
+        failures.push(`#${rowId}: ${err instanceof Error ? err.message : "ошибка"}`);
+      }
+    }
+    if (saved) setEditMessage(`Изменено записей: ${saved}.`);
+    if (failures.length) setEditError(failures.join("; "));
+    setEdits({});
+    setReloadToken((t) => t + 1);
+    setSavingEdits(false);
+  }
+
+  function handleRunAction() {
+    if (action === ACTION_SEND_CALLBACKS) void handleSendCallbacks();
+  }
 
   async function handleRefreshBalances() {
     setRefreshing(true);
@@ -258,13 +313,26 @@ export default function AdminModelListPage() {
     );
   }
 
+  const nameFields = nameEnrichedFields(config.fk_fields, modelKey, config.list_display);
+  const selectable = hasActions;
+  const banner = (tone: "ok" | "err", text: string | null) =>
+    text ? (
+      <div
+        className={`rounded-md border px-3 py-2 text-sm ${
+          tone === "ok"
+            ? "border-green-300 bg-green-50 text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300"
+            : "border-red-300 bg-red-50 text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300"
+        }`}
+      >
+        {text}
+      </div>
+    ) : null;
+  const pendingCount = Object.keys(edits).length;
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-lg font-semibold">{config.verbose_name_plural}</h1>
-          <p className="text-xs text-[var(--text-muted)]">{total.toLocaleString("ru-RU")} записей всего</p>
-        </div>
+        <h1 className="text-lg font-semibold">{config.verbose_name_plural}</h1>
         <div className="flex shrink-0 gap-2">
           <button
             onClick={handleExport}
@@ -281,15 +349,6 @@ export default function AdminModelListPage() {
               Массовые действия
             </Link>
           )}
-          {CALLBACK_KEYS.has(modelKey) && selectedIds.size > 0 && (
-            <button
-              onClick={handleSendCallbacks}
-              disabled={sendingCallbacks}
-              className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-accent disabled:opacity-60"
-            >
-              {sendingCallbacks ? "Отправка…" : `Отправить коллбэки (${selectedIds.size})`}
-            </button>
-          )}
           {modelKey === "merchant-balances" && (
             <button
               onClick={handleRefreshBalances}
@@ -304,104 +363,158 @@ export default function AdminModelListPage() {
               href={`/admin/${modelKey}/new`}
               className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-dark"
             >
-              Создать
+              Добавить +
             </Link>
           )}
         </div>
       </div>
 
-      {refreshMessage && (
-        <div className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
-          {refreshMessage}
-        </div>
-      )}
-      {refreshError && (
-        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {refreshError}
-        </div>
-      )}
+      {banner("ok", refreshMessage)}
+      {banner("err", refreshError)}
+      {banner("err", exportError)}
+      {banner("ok", callbackMessage ? `Коллбэки обработаны: ${callbackMessage}` : null)}
+      {banner("err", callbackError)}
+      {banner("ok", editMessage)}
+      {banner("err", editError)}
+      {banner("err", error)}
 
-      {exportError && (
-        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {exportError}
-        </div>
-      )}
-
-      {callbackMessage && (
-        <div className="rounded-md border border-green-300 bg-green-50 px-3 py-2 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-300">
-          Коллбэки обработаны: {callbackMessage}
-        </div>
-      )}
-      {callbackError && (
-        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {callbackError}
-        </div>
-      )}
-
-      <div className="flex flex-wrap items-end gap-3">
-        {config.search_fields.length > 0 && (
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Поиск</label>
-            <input
-              value={search}
-              onChange={(e) => {
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_16rem]">
+        <div className="min-w-0 space-y-3">
+          {config.search_fields.length > 0 && (
+            <form
+              className="flex items-center gap-2 rounded-md border border-[var(--border)] px-3 py-2"
+              onSubmit={(e) => {
+                e.preventDefault();
                 setPage(1);
-                setSearch(e.target.value);
+                setSearch(searchInput.trim());
               }}
-              placeholder={config.search_fields.map(humanizeFieldName).join(", ")}
-              className="w-64 rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+            >
+              <span className="text-[var(--text-muted)]">⌕</span>
+              <input
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                aria-label="Поиск"
+                className="w-full max-w-md rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+              />
+              <button type="submit" className="rounded-md border border-[var(--border)] px-3 py-1.5 text-sm hover:border-accent">
+                Search
+              </button>
+            </form>
+          )}
+
+          {hasActions && (
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <label htmlFor="list-action">Action:</label>
+              <select
+                id="list-action"
+                value={action}
+                onChange={(e) => setAction(e.target.value)}
+                className="rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 outline-none focus:ring-2 focus:ring-accent"
+              >
+                <option value="">---------</option>
+                {config.actions.map((a) => (
+                  <option key={a.key} value={a.key}>
+                    {a.label}
+                  </option>
+                ))}
+              </select>
+              <button
+                onClick={handleRunAction}
+                disabled={!action || selectedIds.size === 0 || sendingCallbacks}
+                className="rounded-md border border-[var(--border)] px-3 py-1.5 hover:border-accent disabled:opacity-50"
+              >
+                {sendingCallbacks ? "Отправка…" : "Go"}
+              </button>
+              <span className="text-[var(--text-muted)]">
+                {selectedIds.size} of {items.length} selected
+              </span>
+            </div>
+          )}
+
+          <div className="relative">
+            {loading && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg)]/60 text-sm text-[var(--text-muted)]">
+                Загрузка…
+              </div>
+            )}
+            <DataTable
+              modelKey={modelKey}
+              columns={config.list_display}
+              rows={items}
+              ordering={ordering}
+              onSort={handleSort}
+              enhanced={ENHANCED_KEYS.has(modelKey)}
+              selected={selectable ? selectedIds : undefined}
+              onToggleSelected={selectable ? toggleSelected : undefined}
+              onToggleSelectAll={selectable ? toggleSelectAll : undefined}
+              nameFields={nameFields}
+              labels={config.field_labels}
+              editable={listEditable}
+              edits={edits}
+              onEdit={handleEdit}
+              kinds={config.field_kinds}
             />
           </div>
-        )}
-        <ListFilters descriptors={descriptors} filters={filters} onChange={handleFilterChange} />
-      </div>
 
-      {error && (
-        <div className="rounded-md border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-700 dark:border-red-900 dark:bg-red-950 dark:text-red-300">
-          {error}
-        </div>
-      )}
-
-      <div className="relative">
-        {loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-[var(--bg)]/60 text-sm text-[var(--text-muted)]">
-            Загрузка…
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span className="flex items-center gap-1">
+              <button
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={page <= 1}
+                className="rounded-md border border-[var(--border)] px-2.5 py-1 disabled:opacity-40"
+              >
+                ‹
+              </button>
+              <span className="px-2">
+                {page} / {totalPages}
+              </span>
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={page >= totalPages}
+                className="rounded-md border border-[var(--border)] px-2.5 py-1 disabled:opacity-40"
+              >
+                ›
+              </button>
+            </span>
+            <span className="text-[var(--text-muted)]">
+              {total.toLocaleString("ru-RU")} {config.verbose_name_plural}
+            </span>
+            {listEditable.size > 0 && (
+              <button
+                onClick={handleSaveEdits}
+                disabled={savingEdits || pendingCount === 0}
+                className="rounded-md bg-accent px-4 py-1.5 font-medium text-white hover:bg-accent-dark disabled:opacity-50"
+              >
+                {savingEdits ? "Сохранение…" : "Save"}
+              </button>
+            )}
           </div>
-        )}
-        <DataTable
-          modelKey={modelKey}
-          columns={config.list_display}
-          rows={items}
-          ordering={ordering}
-          onSort={handleSort}
-          enhanced={ENHANCED_KEYS.has(modelKey)}
-          selected={CALLBACK_KEYS.has(modelKey) ? selectedIds : undefined}
-          onToggleSelected={CALLBACK_KEYS.has(modelKey) ? toggleSelected : undefined}
-          onToggleSelectAll={CALLBACK_KEYS.has(modelKey) ? toggleSelectAll : undefined}
-          nameFields={nameEnrichedFields(config.fk_fields, modelKey, config.list_display)}
-        />
-      </div>
-
-      <div className="flex items-center justify-between text-sm">
-        <span className="text-[var(--text-muted)]">
-          Страница {page} из {totalPages}
-        </span>
-        <div className="flex gap-2">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page <= 1}
-            className="rounded-md border border-[var(--border)] px-3 py-1.5 disabled:opacity-40"
-          >
-            Назад
-          </button>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page >= totalPages}
-            className="rounded-md border border-[var(--border)] px-3 py-1.5 disabled:opacity-40"
-          >
-            Вперёд
-          </button>
         </div>
+
+        {descriptors.length > 0 && (
+          <aside className="card h-fit space-y-4 p-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-xs font-semibold uppercase tracking-wide">Фильтр</h2>
+              {Object.keys(filters).length > 0 && (
+                <button
+                  onClick={() => {
+                    setPage(1);
+                    setFilters({});
+                  }}
+                  className="text-xs text-accent hover:underline"
+                >
+                  Сбросить
+                </button>
+              )}
+            </div>
+            <ListFilters
+              descriptors={descriptors}
+              filters={filters}
+              onChange={handleFilterChange}
+              labels={config.field_labels}
+            />
+          </aside>
+        )}
       </div>
     </div>
   );

@@ -103,3 +103,13 @@ export function formatDateMaybe(value: unknown): string {
   if (!/^\d{4}-\d{2}-\d{2}T/.test(value)) return value;
   return d.toLocaleString("ru-RU");
 }
+
+/** Column/field caption: the source model's Russian `verbose_name` when the
+ * backend has one, otherwise the humanised field name (see `fieldHeaderLabel`). */
+export function fieldCaption(
+  labels: Record<string, string> | undefined,
+  field: string,
+  nameFields: Set<string>
+): string {
+  return labels?.[field] ?? fieldHeaderLabel(field, nameFields);
+}

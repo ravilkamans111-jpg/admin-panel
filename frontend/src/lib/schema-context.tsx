@@ -76,6 +76,7 @@ export function SchemaProvider({ children }: { children: React.ReactNode }) {
 function groupByApp(schema: AdminModelConfig[]) {
   const map = new Map<string, { appLabel: string; models: AdminModelConfig[] }>();
   for (const model of schema) {
+    if (model.hidden) continue; // reachable by the pages that embed it, not from the menu
     if (!map.has(model.app)) map.set(model.app, { appLabel: model.app_label, models: [] });
     map.get(model.app)!.models.push(model);
   }

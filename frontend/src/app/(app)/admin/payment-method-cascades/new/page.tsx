@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AuthExpiredError, ApiError, createCascade } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { FkSelect } from "@/components/FkSelect";
 
 // Own page (not the generic `[key]/new`) — payment_method_id is required at
 // create time and then locked forever (see `app.services.cascade_write_service`),
@@ -71,20 +72,10 @@ export default function CreateCascadePage() {
         </div>
 
         <div>
-          <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">ID платёжного метода *</label>
-          <input
-            required
-            type="number"
-            value={paymentMethodId}
-            onChange={(e) => setPaymentMethodId(e.target.value)}
-            className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
-          />
+          <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Платежный метод *</label>
+          <FkSelect required targetKey="payment-methods" value={paymentMethodId} onChange={setPaymentMethodId} />
           <p className="mt-1 text-[10px] text-[var(--text-muted)]">
-            ID можно найти в списке{" "}
-            <Link href="/admin/payment-methods" className="text-accent hover:underline">
-              Платёжные методы
-            </Link>
-            .
+            Нельзя изменить после создания каскада.
           </p>
         </div>
 

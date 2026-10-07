@@ -14,6 +14,7 @@ import {
   deleteCascadeItem,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
+import { FkSelect } from "@/components/FkSelect";
 import { formatCellValue } from "@/lib/format";
 
 // Own page (not the generic `[key]/[id]`) — a cascade is a parent record
@@ -25,6 +26,7 @@ type CascadeItem = {
   id: number;
   cascade_id: number;
   payment_method_company_id: number;
+  payment_method_company_id_label?: string;
   priority: number;
   is_active: boolean;
 };
@@ -191,8 +193,8 @@ export default function CascadeDetailPage() {
                 {formatCellValue(cascade.name)}
               </div>
               <div>
-                <span className="text-xs text-[var(--text-muted)]">Платёжный метод (ID, неизменяем): </span>
-                {formatCellValue(cascade.payment_method_id)}
+                <span className="text-xs text-[var(--text-muted)]">Платёжный метод (неизменяем): </span>
+                {formatCellValue(cascade.payment_method_id_label ?? cascade.payment_method_id)}
               </div>
               <div className="sm:col-span-2">
                 <span className="text-xs text-[var(--text-muted)]">Описание: </span>
@@ -276,7 +278,7 @@ export default function CascadeDetailPage() {
               {editingItemId === item.id ? (
                 <>
                   <span className="text-[var(--text-muted)]">
-                    Конфиг метода у партнёра #{item.payment_method_company_id}
+                    {item.payment_method_company_id_label ?? `#${item.payment_method_company_id}`}
                   </span>
                   <div className="flex items-center gap-3">
                     <label className="flex items-center gap-1 text-xs">
@@ -315,8 +317,9 @@ export default function CascadeDetailPage() {
               ) : (
                 <>
                   <span>
-                    Приоритет <strong>{item.priority}</strong> — Конфиг метода у партнёра #
-                    {item.payment_method_company_id} — {item.is_active ? "активен" : "неактивен"}
+                    Приоритет <strong>{item.priority}</strong> —{" "}
+                    {item.payment_method_company_id_label ?? `#${item.payment_method_company_id}`} —{" "}
+                    {item.is_active ? "активен" : "неактивен"}
                   </span>
                   <div className="flex gap-2">
                     <button
@@ -340,14 +343,14 @@ export default function CascadeDetailPage() {
         </div>
 
         <form onSubmit={handleAddItem} className="card flex flex-wrap items-end gap-3 p-4">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">ID конфига метода у партнёра *</label>
-            <input
+          <div className="w-80 max-w-full">
+            <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">Платежный метод компании *</label>
+            <FkSelect
               required
-              type="number"
+              targetKey="payment-method-companies"
               value={newPmcId}
-              onChange={(e) => setNewPmcId(e.target.value)}
-              className="w-48 rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
+              onChange={setNewPmcId}
+              filters={{ payment_method_id: String(cascade.payment_method_id) }}
             />
           </div>
           <div>
@@ -368,14 +371,8 @@ export default function CascadeDetailPage() {
             Добавить
           </button>
           <p className="w-full text-[10px] text-[var(--text-muted)]">
-            ID можно найти в списке{" "}
-            <Link
-              href={`/admin/payment-method-companies?payment_method_id=${cascade.payment_method_id}`}
-              className="text-accent hover:underline"
-            >
-              Конфиги методов у партнёров
-            </Link>{" "}
-            — платёжный метод должен совпадать с методом каскада ({formatCellValue(cascade.payment_method_id)}).
+            В списке только методы компаний для платёжного метода каскада —{" "}
+            {formatCellValue(cascade.payment_method_id_label ?? cascade.payment_method_id)}.
           </p>
         </form>
       </div>

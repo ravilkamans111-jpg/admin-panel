@@ -18,7 +18,7 @@ import {
   type CommissionContext,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { fieldHeaderLabel, formatCellValue, formatDateMaybe, nameEnrichedFields } from "@/lib/format";
+import { fieldCaption, formatCellValue, formatDateMaybe, nameEnrichedFields } from "@/lib/format";
 import { StatusBadge } from "@/components/StatusBadge";
 import { FkSelect } from "@/components/FkSelect";
 
@@ -29,7 +29,7 @@ const ENHANCED_KEYS = new Set(["transactions", "merchant-balances", "settlements
 // balance math, Redis cache invalidation. Any other `config.is_writable`
 // model falls back to the generic engine (`app.api.generic_writes`),
 // which is safe for it precisely because it ISN'T in this map.
-const UPDATE_FN: Record<string, (id: string | number, values: Record<string, string | null>) => Promise<Record<string, unknown>>> = {
+const UPDATE_FN: Record<string, (id: string | number, values: Record<string, string | boolean | null>) => Promise<Record<string, unknown>>> = {
   transactions: updateTransaction,
   "payment-method-companies": updatePaymentMethodCompany,
   "merchant-payment-methods": updateMerchantPaymentMethod,
@@ -183,11 +183,15 @@ export default function AdminModelDetailPage() {
     setSaving(true);
     setSaveError(null);
     try {
-      const values: Record<string, string | null> = {};
+      const values: Record<string, string | boolean | null> = {};
       for (const field of config.editable_fields) {
-        values[field] = form[field] === "" ? null : form[field];
+        if (config.field_kinds[field] === "bool") {
+          values[field] = form[field] === "true";
+        } else {
+          values[field] = form[field] === "" ? null : form[field];
+        }
       }
-      const updateFn = UPDATE_FN[modelKey] ?? ((recordId: string | number, v: Record<string, string | null>) => updateRecordGeneric(modelKey, recordId, v));
+      const updateFn = UPDATE_FN[modelKey] ?? ((recordId: string | number, v: Record<string, string | boolean | null>) => updateRecordGeneric(modelKey, recordId, v));
       const updated =
         modelKey === "settlements" ? (await updateSettlement(id, values)).settlement : await updateFn(id, values);
       setRecord(updated);
@@ -324,7 +328,7 @@ export default function AdminModelDetailPage() {
             return (
               <div key={field} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
                 <div className="w-full shrink-0 text-xs font-medium text-[var(--text-muted)] sm:w-56">
-                  {fieldHeaderLabel(field, nameFields)}
+                  {fieldCaption(config.field_labels, field, nameFields)}
                 </div>
                 {field === "status" ? (
                   <select
@@ -359,8 +363,16 @@ export default function AdminModelDetailPage() {
                       onChange={(v) => setForm((f) => ({ ...f, [field]: v }))}
                     />
                   </div>
+                ) : config.field_kinds[field] === "bool" ? (
+                  <input
+                    type="checkbox"
+                    checked={form[field] === "true"}
+                    onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.checked ? "true" : "false" }))}
+                  />
                 ) : (
                   <input
+                    type={["int", "decimal"].includes(config.field_kinds[field]) ? "number" : "text"}
+                    step={config.field_kinds[field] === "decimal" ? "any" : undefined}
                     value={form[field] ?? ""}
                     onChange={(e) => setForm((f) => ({ ...f, [field]: e.target.value }))}
                     className="w-full max-w-xs rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"
@@ -380,6 +392,8 @@ export default function AdminModelDetailPage() {
             display = String(record[`${field}_label`]);
           } else if (enhanced && field === "status" && value !== null && value !== undefined) {
             display = <StatusBadge value={value} />;
+          } else if (typeof value === "boolean") {
+            display = value ? <span className="text-green-500">✓</span> : <span className="text-red-500">⊗</span>;
           } else if (field.startsWith("date_") || field.endsWith("_at") || field === "date") {
             display = formatDateMaybe(value);
           } else {
@@ -388,7 +402,7 @@ export default function AdminModelDetailPage() {
           return (
             <div key={field} className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-baseline sm:gap-4">
               <div className="w-full shrink-0 text-xs font-medium text-[var(--text-muted)] sm:w-56">
-                {fieldHeaderLabel(field, nameFields)}
+                {fieldCaption(config.field_labels, field, nameFields)}
                 {editing && editableSet.has(field) === false && canEdit && (
                   <span className="ml-1 text-[10px] text-[var(--text-muted)]">(нередактируемо)</span>
                 )}

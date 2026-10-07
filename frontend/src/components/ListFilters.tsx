@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchOptions } from "@/lib/api";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
-import { fieldHeaderLabel } from "@/lib/format";
+import { fieldCaption } from "@/lib/format";
 import type { FilterDescriptor, OptionItem } from "@/lib/types";
 
 const control =
@@ -51,7 +51,7 @@ function ChoiceFilter({
 
   return (
     <div ref={ref} className="relative">
-      <button type="button" onClick={() => setOpen((o) => !o)} className={`${control} min-w-36 text-left`}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className={`${control} w-full text-left`}>
         {selected.length === 0 ? "Все" : selected.map((v) => options.find((o) => o.value === v)?.label ?? v).join(", ")}
       </button>
       {open && (
@@ -108,7 +108,7 @@ function FkFilter({ target, value, onChange }: { target: string; value: string; 
 
   return (
     <div ref={ref} className="relative">
-      <div className={`${control} flex min-h-[34px] min-w-44 max-w-xs flex-wrap items-center gap-1`} onClick={() => setOpen(true)}>
+      <div className={`${control} flex min-h-[34px] w-full flex-wrap items-center gap-1`} onClick={() => setOpen(true)}>
         {selected.map((id) => (
           <Chip key={id} label={labels[id] ?? `#${id}`} onRemove={() => toggle(id)} />
         ))}
@@ -150,15 +150,17 @@ export function ListFilters({
   descriptors,
   filters,
   onChange,
+  labels,
 }: {
   descriptors: FilterDescriptor[];
   filters: Record<string, string>;
   onChange: (param: string, value: string) => void;
+  labels?: Record<string, string>;
 }) {
   return (
     <>
       {descriptors.map((d) => {
-        const label = fieldHeaderLabel(d.field, new Set([d.field]));
+        const label = fieldCaption(labels, d.field, new Set([d.field]));
         return (
           <div key={d.field}>
             <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">{label}</label>
@@ -169,14 +171,13 @@ export function ListFilters({
               <FkFilter target={d.target} value={filters[d.field] ?? ""} onChange={(v) => onChange(d.field, v)} />
             )}
             {d.kind === "date" && (
-              <div className="flex items-center gap-1">
+              <div className="flex flex-col gap-1">
                 <input
                   type="date"
                   value={filters[`${d.field}__gte`] ?? ""}
                   onChange={(e) => onChange(`${d.field}__gte`, e.target.value)}
                   className={control}
                 />
-                <span className="text-[var(--text-muted)]">—</span>
                 <input
                   type="date"
                   value={filters[`${d.field}__lte`] ?? ""}
@@ -186,7 +187,7 @@ export function ListFilters({
               </div>
             )}
             {d.kind === "text" && (
-              <input value={filters[d.field] ?? ""} onChange={(e) => onChange(d.field, e.target.value)} className={`${control} w-36`} />
+              <input value={filters[d.field] ?? ""} onChange={(e) => onChange(d.field, e.target.value)} className={`${control} w-full`} />
             )}
           </div>
         );

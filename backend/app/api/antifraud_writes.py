@@ -24,10 +24,42 @@ class UpdateAntifraudBlockRequest(BaseModel):
     merchant_id: int | None = None
     user_id: str | None = None
     second_chance: bool | None = None
+    second_chance_counter: int | None = None
     permanent_ban: bool | None = None
 
     def to_values(self) -> dict[str, object]:
         return self.model_dump(exclude_unset=True)
+
+
+class CreateAntifraudBlockRequest(BaseModel):
+    merchant_id: int
+    user_id: str
+    second_chance: bool = False
+    permanent_ban: bool = False
+
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_antifraud_block(
+    body: CreateAntifraudBlockRequest,
+    request: Request,
+    current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
+    tenant_session: AsyncSession = Depends(get_tenant_write_session),
+) -> dict:
+    try:
+        after = await antifraud_write_service.create_antifraud_block(tenant_session, values=body.model_dump())
+    except ValueError as exc:
+        await tenant_session.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+    except Exception:
+        await tenant_session.rollback()
+        raise
+    await tenant_session.commit()
+    await audit_service.write_record_change_audit(
+        admin_user_id=current_user.admin_user_id, brand_id=current_user.brand_id, action="create_antifraud_block",
+        model_key="antifraud-blocks", record_id=after["id"], before={}, after=after,
+        ip_address=request.client.host if request.client else None,
+    )
+    return after
 
 
 @router.patch("/{pk}")

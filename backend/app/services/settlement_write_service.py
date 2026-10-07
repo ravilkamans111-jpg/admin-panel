@@ -36,12 +36,10 @@ Bug-for-bug per the same instruction as `balance_math.py`:
     = settlement.balance_partner` self-assignments in source are literal
     no-ops — nothing to reproduce.
 
-NOT verified against source (gap flagged by the extraction agent): the
-exact query behind `PaymentMethodService.get_payment_method_company_by_method_currency_direction_company`
-was not in the read scope. Implemented here as the most direct reading —
-find the PaymentMethodCompany for this company whose PaymentMethod is named
-"settlement", matching the given currency and direction. Verify against
-source before relying on this for a real production create.
+The PaymentMethodCompany lookup (`PaymentMethodService.get_payment_method_company_by_method_currency_direction_company`)
+is ported exactly: name == "SETTLEMENT", currency, direction, `sub_method IS NULL`, company —
+a single row, otherwise an error (verified against the source and the real brand data, where all
+settlement methods are named SETTLEMENT with a NULL sub_method).
 """
 
 from __future__ import annotations
@@ -122,11 +120,16 @@ async def find_settlement_payment_method_company(
         .where(
             PaymentMethodCompany.company_id == company_id,
             PaymentMethod.currency_id == currency_id,
-            PaymentMethod.direction == direction,
-            PaymentMethod.name.ilike("settlement"),
+            PaymentMethod.direction == direction.upper(),
+            PaymentMethod.name == "SETTLEMENT",  # source: `payment_method__name=method.upper()`
+            PaymentMethod.sub_method.is_(None),  # source passes sub_method=None -> `IS NULL`
         )
     )
-    return result.scalars().first()
+    found = result.scalars().all()
+    # Source uses `.get()`: exactly one row, otherwise an error (DoesNotExist / MultipleObjectsReturned).
+    if len(found) > 1:
+        raise ValueError(f"Найдено несколько методов SETTLEMENT ({direction}) у компании {company_id} для валюты {currency_id}")
+    return found[0] if found else None
 
 
 async def create_or_update_settlement(
@@ -352,8 +355,8 @@ async def _apply_pre_save_from_admin(
         )
         if payment_method_company is None:
             raise ValueError(
-                "No settlement PaymentMethodCompany found for this company/currency/direction — "
-                "see the module docstring: this lookup is not verified against source."
+                f"У компании нет платёжного метода {direction}: settlement для этой валюты "
+                "(PaymentMethodCompanyNotExistError в монолите)"
             )
         now = datetime.now(UTC)
         txn = Transaction(

@@ -31,14 +31,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import DeclarativeBase
 
 from app.core.rbac import role_at_least
 from app.core.roles import BrandRole
 from app.models.tenant import (
     AntiFraudBlockedMerchantUsers,
-    Appeal,
     Bank,
     Card,
     Company,
@@ -64,7 +63,6 @@ from app.models.tenant import (
     TemplateMethodMapping,
     TestCredits,
     Transaction,
-    UserConfig,
     WhiteList,
 )
 
@@ -161,6 +159,24 @@ class AdminModelConfig:
     # in list/detail responses (still writable; the mask placeholder is
     # ignored on save so a round-tripped form can't overwrite the secret).
     sensitive_fields: list[str] = field(default_factory=list)
+    # Russian column/field captions (the source models' `verbose_name`s). Falls
+    # back to a humanised field name in the UI where a field has no entry.
+    field_labels: dict[str, str] = field(default_factory=dict)
+    # Fields edited in place in the list (Django's `list_editable`): checkboxes /
+    # number inputs per row with a single Save for the page.
+    list_editable: list[str] = field(default_factory=list)
+    # Bulk actions offered in the list's "Action:" dropdown, as (key, label).
+    actions: list[tuple[str, str]] = field(default_factory=list)
+    # Hidden from the navigation (still reachable by the pages that embed it).
+    hidden: bool = False
+    list_per_page: int = 20
+    # Extra WHERE clause for the search box on things that aren't columns of this
+    # model (e.g. a partner method's method token / company name): `term -> clause`,
+    # OR-ed with the column search.
+    extra_search: Callable[[str], Any] | None = None
+    # Minimum role for writing this model through the generic engine (default: operator).
+    # `users` needs superadmin — editing `is_superuser`/`is_staff` is privilege escalation.
+    write_role: BrandRole = BrandRole.OPERATOR
 
     @property
     def app_label(self) -> str:
@@ -256,6 +272,7 @@ register(
         # handled by the transactions-only `_enrich_transaction_labels` in
         # app.repositories.admin_repository instead of fk_fields.
         fk_fields={"merchant_id": "merchants"},
+        actions=[("send_callbacks", "Отправить коллбэки выбранным мерчантам")],
     )
 )
 
@@ -266,10 +283,33 @@ register(
         model=Settlements,
         verbose_name="Сеттлмент",
         verbose_name_plural="Сеттлменты",
-        list_display=_all_fields(Settlements),
+        # Same columns and order as the source SettlementsAdmin.list_display.
+        list_display=[
+            "id", "status", "settl_type", "balance_partner_id", "balance_merchant_id", "amount", "commission",
+            "our_funds", "clients_funds", "conversion_rate", "amount_in_usdt", "final_amount",
+            "final_amount_in_usdt", "wallet", "tracker_link", "date_create", "date_update", "transaction_id",
+        ],
         list_filter=["status", "settl_type"],
         date_filters=["date_create", "date_update"],
-        search_fields=["transaction_id", "wallet", "tracker_link", "tg_id"],
+        virtual_filters={
+            "partner_company_id": VirtualFilter(
+                "companies",
+                lambda ids: Settlements.balance_partner_id.in_(select(CompanyBalance.id).where(CompanyBalance.company_id.in_(ids))),
+            ),
+            "partner_currency_id": VirtualFilter(
+                "currencies",
+                lambda ids: Settlements.balance_partner_id.in_(select(CompanyBalance.id).where(CompanyBalance.currency_id.in_(ids))),
+            ),
+            "merchant_currency_id": VirtualFilter(
+                "currencies",
+                lambda ids: Settlements.balance_merchant_id.in_(select(MerchantBalance.id).where(MerchantBalance.currency_id.in_(ids))),
+            ),
+            "merchant_id": VirtualFilter(
+                "merchants",
+                lambda ids: Settlements.balance_merchant_id.in_(select(MerchantBalance.id).where(MerchantBalance.merchant_id.in_(ids))),
+            ),
+        },
+        search_fields=["status", "settl_type", "amount", "wallet", "tracker_link", "date_create", "date_update"],
         default_ordering=["-date_create"],
         editable_fields=[
             "status", "amount", "commission", "our_funds", "clients_funds",
@@ -281,19 +321,19 @@ register(
         # post-creation (see migration research on SettlementsAdmin).
         creatable_fields=["settl_type", "balance_merchant_id", "balance_partner_id"],
         creatable=True,
-    )
-)
-
-register(
-    AdminModelConfig(
-        key="appeals",
-        app="personal_account_transaction",
-        model=Appeal,
-        verbose_name="Апелляция",
-        verbose_name_plural="Апелляции",
-        list_display=_all_fields(Appeal),
-        list_filter=["status", "type_appeal"],
-        search_fields=["description", "type_appeal"],
+        actions=[("send_callbacks", "Отправить коллбэки выбранным пользователям в телеграмм")],
+        field_labels={
+            "id": "PK", "status": "Статус", "settl_type": "Тип сеттла", "balance_partner_id": "Баланс партнера",
+            "balance_merchant_id": "Баланс клиента", "amount": "Сумма валюте баланса",
+            "commission": "% комиссии (из баланса!)", "our_funds": "Наши средства",
+            "clients_funds": "Средства клиентов", "conversion_rate": "Курс обмена", "amount_in_usdt": "Сумма в USDT",
+            "final_amount": "Итоговая сумма", "final_amount_in_usdt": "Итоговая сумма в USDT",
+            "wallet": "Адрес кошелька", "tracker_link": "Ссылка на трекер",
+            "transaction_id": "ID связанной транзакции в БД", "date_create": "Дата создания",
+            "date_update": "Дата обновления", "tg_id": "Telegram ID клиента",
+            "partner_company_id": "Компания партнёра", "partner_currency_id": "Валюта партнёра",
+            "merchant_currency_id": "Валюта клиента", "merchant_id": "Мерчант клиента",
+        },
     )
 )
 
@@ -304,12 +344,28 @@ register(
         model=AntiFraudBlockedMerchantUsers,
         verbose_name="Антифрод-блокировка",
         verbose_name_plural="Антифрод-блокировки",
-        list_display=_all_fields(AntiFraudBlockedMerchantUsers),
-        list_filter=["permanent_ban", "second_chance"],
-        date_filters=["date_create"],
-        search_fields=["merchant_name", "user_id"],
+        # Same columns and order as the source AntiFraudBlockedMerchantUsersAdmin.list_display.
+        list_display=[
+            "merchant_name", "user_id", "second_chance", "second_chance_counter", "second_chance_date",
+            "ban_date", "date_create", "date_update", "permanent_ban",
+        ],
+        list_filter=["merchant_name"],
+        date_filters=["second_chance_date", "date_create"],
+        search_fields=["merchant_name", "user_id", "date_create", "date_update", "second_chance_date", "second_chance_counter"],
         default_ordering=["-date_create"],
-        editable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
+        editable_fields=["merchant_id", "user_id", "second_chance", "second_chance_counter", "permanent_ban"],
+        # The add form of the source admin: merchant, user id, second chance, permanent ban
+        # (the counter and the dates are read-only / set by the save logic).
+        creatable_fields=["merchant_id", "user_id", "second_chance", "permanent_ban"],
+        creatable=True,
+        deletable=True,
+        list_editable=["second_chance", "second_chance_counter", "permanent_ban"],
+        field_labels={
+            "merchant_id": "Мерчант", "merchant_name": "Название мерчанта", "user_id": "ID пользователя",
+            "second_chance": "Второй шанс", "second_chance_counter": "Счётчик вторых шансов",
+            "second_chance_date": "Время второго шанса", "ban_date": "Дата бана",
+            "date_create": "Дата создания", "date_update": "Дата обновления", "permanent_ban": "Постоянный бан",
+        },
         fk_fields={"merchant_id": "merchants"},
     )
 )
@@ -426,51 +482,6 @@ register(
 
 register(
     AdminModelConfig(
-        key="user-configs",
-        app="personal_account_auth",
-        model=UserConfig,
-        verbose_name="USDT-настройки пользователя",
-        verbose_name_plural="USDT-настройки пользователей",
-        list_display=_all_fields(UserConfig),
-        list_filter=["enable_usdt_exchanger", "exchanger_source"],
-        editable_fields=[
-            "user_id",
-            "enable_usdt_exchanger",
-            "exchanger_source",
-            "pinned_exchange",
-            "binance_stack_page",
-            "binance_stack_rows",
-            "binance_stack_row_from",
-            "binance_stack_row_to",
-            "bybit_stack_page",
-            "bybit_stack_size",
-            "bybit_stack_row_from",
-            "bybit_stack_row_to",
-            "manual_usdt_rates",
-        ],
-        creatable_fields=[
-            "user_id",
-            "enable_usdt_exchanger",
-            "exchanger_source",
-            "pinned_exchange",
-            "binance_stack_page",
-            "binance_stack_rows",
-            "binance_stack_row_from",
-            "binance_stack_row_to",
-            "bybit_stack_page",
-            "bybit_stack_size",
-            "bybit_stack_row_from",
-            "bybit_stack_row_to",
-            "manual_usdt_rates",
-        ],
-        creatable=True,
-        deletable=True,
-        fk_fields={"user_id": "users"},
-    )
-)
-
-register(
-    AdminModelConfig(
         key="users",
         app="personal_account_auth",
         model=DjangoAuthUser,
@@ -480,6 +491,14 @@ register(
         list_filter=["is_active", "is_staff", "is_superuser"],
         search_fields=["username", "email", "first_name", "last_name"],
         str_template="{username}",
+        editable_fields=["first_name", "last_name", "email", "is_active", "is_staff", "is_superuser"],
+        field_labels={
+            "id": "ID", "username": "Username", "first_name": "First name", "last_name": "Last name",
+            "email": "Email address", "is_active": "Active", "is_staff": "Staff status",
+            "is_superuser": "Superuser status", "last_login": "Last login", "date_joined": "Date joined",
+        },
+        write_role=BrandRole.SUPERADMIN,
+        creatable=True,  # via the dedicated Django-style "Add user" endpoint (app.api.django_users)
     )
 )
 
@@ -528,8 +547,8 @@ register(
         key="payment-method-companies",
         app="api_mediator",
         model=PaymentMethodCompany,
-        verbose_name="Конфиг метода у партнёра",
-        verbose_name_plural="Конфиги методов у партнёров",
+        verbose_name="Платежный метод компании",
+        verbose_name_plural="Платежные методы компаний-партнеров",
         # Matches source PaymentMethodCompanyAdmin.list_display order
         # (payment_method/company columns right after id).
         list_display=[
@@ -539,7 +558,7 @@ register(
             "current_daily_coun_success", "current_daily_amount", "current_daily_amount_success", "last_reset",
         ],
         list_filter=["is_active", "company_id", "payment_method_id"],
-        default_ordering=["priority"],
+        default_ordering=["-is_active", "payment_method_id"],
         editable_fields=[
             "is_active",
             "priority",
@@ -559,6 +578,31 @@ register(
         # items, floated percents, partner statistics): "<method> — <partner>".
         str_template="{payment_method_id_label} — {company_id_label}",
         fk_fields={"company_id": "companies", "payment_method_id": "payment-methods"},
+        list_editable=[
+            "is_active", "priority", "partner_rate", "additional_commission", "settlement_commission",
+            "daily_amount_limit", "daily_count_limit", "transaction_min_limit", "transaction_max_limit",
+        ],
+        extra_search=lambda term: or_(
+            PaymentMethodCompany.payment_method_id.in_(
+                select(PaymentMethod.id).where(
+                    or_(PaymentMethod.token.ilike(f"%{term}%"), PaymentMethod.name.ilike(f"%{term}%"))
+                )
+            ),
+            PaymentMethodCompany.company_id.in_(select(Company.id).where(Company.name.ilike(f"%{term}%"))),
+        ),
+        field_labels={
+            "id": "ID", "payment_method_id": "Платежный метод", "company_id": "Компания-партнёр",
+            "is_active": "Статус активности", "priority": "Приоритет в каскаде",
+            "partner_rate": "Процентная ставка (0.01 - 100)", "changing_rate": "Процентная ставка изменяется",
+            "additional_commission": "Добавочная комиссия", "settlement_commission": "Сетлмент комиссия",
+            "daily_amount_limit": "Дневной лимит на сумму", "daily_count_limit": "Дневной лимит на число транзакций",
+            "transaction_min_limit": "Минимум транзакции", "transaction_max_limit": "Максимум транзакции",
+            "current_daily_amount": "Сумма запросов сегодня",
+            "current_daily_amount_success": "Сумма успешных транзакций сегодня",
+            "current_daily_count": "Число запросов сегодня",
+            "current_daily_coun_success": "Число успешных транзакций сегодня",
+            "last_reset": "Время последнего обновления",
+        },
     )
 )
 
@@ -771,6 +815,7 @@ register(
         creatable_fields=["cascade_id", "payment_method_company_id", "priority", "is_active"],
         deletable=True,
         fk_fields={"cascade_id": "payment-method-cascades", "payment_method_company_id": "payment-method-companies"},
+        hidden=True,
     )
 )
 
@@ -974,6 +1019,12 @@ def config_to_dict(config: AdminModelConfig) -> dict[str, Any]:
         "is_writable": config.is_writable,
         "str_template": config.str_template,
         "fk_fields": config.fk_fields,
+        "field_labels": config.field_labels,
+        "list_editable": config.list_editable,
+        "actions": [{"key": k, "label": label} for k, label in config.actions],
+        "hidden": config.hidden,
+        "list_per_page": config.list_per_page,
+        "field_kinds": field_kinds(config),
     }
 
 
@@ -985,3 +1036,28 @@ def mask_row(config: AdminModelConfig, row: dict[str, Any], role: str | None) ->
     if role is not None and role_at_least(role, SENSITIVE_MIN_ROLE):
         return row
     return {k: (SENSITIVE_MASK if k in config.sensitive_fields and v else v) for k, v in row.items()}
+
+
+def field_kinds(config: AdminModelConfig) -> dict[str, str]:
+    """Input kind for every editable/creatable field — `bool`, `int`, `decimal`,
+    `datetime`, `json` or `text` — so forms render checkboxes and number inputs
+    instead of text boxes for everything."""
+    from sqlalchemy import JSON, Boolean, Date, DateTime, Integer, Numeric
+
+    kinds: dict[str, str] = {}
+    for name in {*config.editable_fields, *config.creatable_fields, *config.list_editable}:
+        column = getattr(config.model, name, None)
+        col_type = getattr(column, "type", None)
+        if isinstance(col_type, Boolean):
+            kinds[name] = "bool"
+        elif isinstance(col_type, Integer):
+            kinds[name] = "int"
+        elif isinstance(col_type, Numeric):
+            kinds[name] = "decimal"
+        elif isinstance(col_type, (DateTime, Date)):
+            kinds[name] = "datetime"
+        elif isinstance(col_type, JSON):
+            kinds[name] = "json"
+        else:
+            kinds[name] = "text"
+    return kinds

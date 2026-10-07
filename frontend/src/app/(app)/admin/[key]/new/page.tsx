@@ -6,7 +6,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useSchema } from "@/lib/schema-context";
 import { AuthExpiredError, createSettlement, createRecord } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
-import { fieldHeaderLabel, humanizeFieldName } from "@/lib/format";
+import { fieldCaption, humanizeFieldName } from "@/lib/format";
 import { FkSelect } from "@/components/FkSelect";
 import type { AdminModelConfig } from "@/lib/types";
 
@@ -243,8 +243,12 @@ function GenericCreateForm({ config }: { config: AdminModelConfig }) {
     setSaving(true);
     setSaveError(null);
     try {
-      const values: Record<string, string | null> = {};
+      const values: Record<string, string | boolean | null> = {};
       for (const field of config.creatable_fields) {
+        if (config.field_kinds[field] === "bool") {
+          values[field] = form[field] === "true"; // an unticked box is a real "false", not "omitted"
+          continue;
+        }
         const raw = form[field];
         // An untouched field is omitted entirely (not sent as null) so a
         // NOT NULL column with a model-level default (e.g. TestCredits'
@@ -289,15 +293,29 @@ function GenericCreateForm({ config }: { config: AdminModelConfig }) {
       <form onSubmit={handleSubmit} className="card space-y-3 p-4">
         {config.creatable_fields.map((field) => {
           const targetKey = config.fk_fields[field];
+          const kind = config.field_kinds[field] ?? "text";
+          const caption = fieldCaption(config.field_labels, field, targetKey ? new Set([field]) : new Set());
+          if (kind === "bool") {
+            return (
+              <label key={field} className="flex items-center gap-2 py-1 text-sm">
+                <input
+                  type="checkbox"
+                  checked={form[field] === "true"}
+                  onChange={(e) => setField(field, e.target.checked ? "true" : "false")}
+                />
+                {caption}
+              </label>
+            );
+          }
           return (
             <div key={field}>
-              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">
-                {targetKey ? fieldHeaderLabel(field, new Set([field])) : humanizeFieldName(field)}
-              </label>
+              <label className="mb-1 block text-xs font-medium text-[var(--text-muted)]">{caption}</label>
               {targetKey ? (
                 <FkSelect targetKey={targetKey} value={form[field] ?? ""} onChange={(v) => setField(field, v)} />
               ) : (
                 <input
+                  type={kind === "int" || kind === "decimal" ? "number" : "text"}
+                  step={kind === "decimal" ? "any" : undefined}
                   value={form[field] ?? ""}
                   onChange={(e) => setField(field, e.target.value)}
                   className="w-full rounded-md border border-[var(--border)] bg-transparent px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-accent"

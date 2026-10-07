@@ -46,10 +46,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import RecordNotFoundError
-from app.models.tenant import AntiFraudBlockedMerchantUsers
+from app.models.tenant import AntiFraudBlockedMerchantUsers, DjangoAuthUser, Merchant
 from app.registry.admin_models import get_config
 from app.repositories.admin_repository import row_to_dict
 
@@ -95,3 +96,35 @@ async def update_antifraud_block(
     await session.flush()
     after = row_to_dict(block)
     return before, after
+
+
+async def create_antifraud_block(session: AsyncSession, *, values: dict[str, Any]) -> dict[str, Any]:
+    """Admin "Add Блокировка": `old_value is None`, so source takes the `else` branch —
+    `merchant_name = str(merchant)` and `ban_date = now`; the counter stays 0 even if
+    "Второй шанс" is ticked on creation (no increment without an old value)."""
+    allowed = {"merchant_id", "user_id", "second_chance", "permanent_ban"}
+    unknown = [f for f in values if f not in allowed]
+    if unknown:
+        raise ValueError(f"Not creatable on AntiFraudBlockedMerchantUsers: {unknown}")
+    if not values.get("user_id"):
+        raise ValueError("Укажите ID пользователя")
+    merchant = await session.get(Merchant, values["merchant_id"]) if values.get("merchant_id") else None
+    if merchant is None:
+        # Source's FK is nullable, but `str(None)` would store the text "None" as the name — refuse instead.
+        raise ValueError("Укажите мерчанта")
+    user = await session.get(DjangoAuthUser, merchant.user_id)
+    merchant_name = f"{user.username}: {merchant.name}" if merchant.name else (user.username if user else "")
+
+    now = datetime.now(UTC)
+    block = AntiFraudBlockedMerchantUsers(
+        merchant_id=merchant.id, merchant_name=merchant_name, user_id=str(values["user_id"]),
+        second_chance=bool(values.get("second_chance", False)), second_chance_counter=0,
+        permanent_ban=bool(values.get("permanent_ban", False)),
+        ban_date=now, date_create=now, date_update=now,
+    )
+    session.add(block)
+    try:
+        await session.flush()
+    except IntegrityError as exc:
+        raise ValueError("Блокировка для этого мерчанта и пользователя уже существует") from exc
+    return row_to_dict(block)

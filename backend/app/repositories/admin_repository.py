@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, String, Text, func, or_, select
+from sqlalchemy import JSON, Boolean, Date, DateTime, String, Text, cast, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Select
 
@@ -111,12 +111,14 @@ def apply_casted_field_updates(config: AdminModelConfig, instance: Any, values: 
 
 def _apply_filters(stmt: Select, config: AdminModelConfig, *, search: str | None, filters: dict[str, str]) -> Select:
     model = config.model
-    if search and config.search_fields:
+    if search:
         search_clauses = []
         for field_name in config.search_fields:
             column = _column(model, field_name)
-            if isinstance(column.type, (String, Text)):
-                search_clauses.append(column.ilike(f"%{search}%"))
+            # Django's search_fields also covers numbers and dates (it casts to text).
+            search_clauses.append(column.ilike(f"%{search}%") if isinstance(column.type, (String, Text)) else cast(column, String).ilike(f"%{search}%"))
+        if config.extra_search is not None:
+            search_clauses.append(config.extra_search(search))
         if search_clauses:
             stmt = stmt.where(or_(*search_clauses))
 
@@ -207,6 +209,7 @@ async def run_list_query(
     await _enrich_currency_codes(session, items)
     await _enrich_fk_labels(session, config, items)
     await _enrich_transaction_labels(session, config, items)
+    await _enrich_settlement_labels(session, config, items)
     return Page(items=items, total=total, page=page, page_size=page_size)
 
 
@@ -301,6 +304,51 @@ async def _enrich_transaction_labels(session: AsyncSession, config: AdminModelCo
             row["payment_method_company_id_label"] = name_by_id[pmc_id]
 
 
+async def _enrich_settlement_labels(session: AsyncSession, config: AdminModelConfig, rows: list[dict[str, Any]]) -> None:
+    """Settlements only: the two balance columns read like the source admin —
+    partner: `str(CompanyBalance)` = "<company> balance <CUR>: <available>";
+    client: `merchant_balance_label_for_settlement_admin` = "[pk] <merchant> balance <CUR>: <balance>",
+    or "... : <balance_usdt> USDT" for merchants whose user has the USDT exchanger on."""
+    if config.key != "settlements" or not rows:
+        return
+    from app.models.tenant import CompanyBalance, Merchant, MerchantBalance, UserConfig
+    from app.registry.admin_models import get_config
+
+    partner_ids = {r["balance_partner_id"] for r in rows if r.get("balance_partner_id") is not None}
+    merchant_ids = {r["balance_merchant_id"] for r in rows if r.get("balance_merchant_id") is not None}
+
+    if partner_ids:
+        balances = [row_to_dict(b) for b in (await session.execute(select(CompanyBalance).where(CompanyBalance.id.in_(partner_ids)))).scalars()]
+        await _enrich_fk_labels(session, get_config("company-balances"), balances)
+        by_id = {
+            b["id"]: f"{b.get('company_id_label', b['company_id'])} balance {b.get('currency_id_label', b['currency_id'])}: {b['available_balance']}"
+            for b in balances
+        }
+        for r in rows:
+            if r.get("balance_partner_id") in by_id:
+                r["balance_partner_id_label"] = by_id[r["balance_partner_id"]]
+
+    if merchant_ids:
+        balances = [row_to_dict(b) for b in (await session.execute(select(MerchantBalance).where(MerchantBalance.id.in_(merchant_ids)))).scalars()]
+        await _enrich_fk_labels(session, get_config("merchant-balances"), balances)
+        user_by_merchant = dict(
+            (await session.execute(select(Merchant.id, Merchant.user_id).where(Merchant.id.in_({b["merchant_id"] for b in balances})))).all()
+        )
+        exchanger_users = set(
+            (await session.execute(select(UserConfig.user_id).where(UserConfig.enable_usdt_exchanger.is_(True)))).scalars()
+        )
+        by_id = {}
+        for b in balances:
+            head = f"[{b['id']}] {b.get('merchant_id_label', b['merchant_id'])} balance {b.get('currency_id_label', b['currency_id'])}: "
+            if user_by_merchant.get(b["merchant_id"]) in exchanger_users:
+                by_id[b["id"]] = f"{head}{Decimal(str(b['balance_usdt'])).quantize(Decimal('0.01'))} USDT"
+            else:
+                by_id[b["id"]] = f"{head}{b['balance']}"
+        for r in rows:
+            if r.get("balance_merchant_id") in by_id:
+                r["balance_merchant_id_label"] = by_id[r["balance_merchant_id"]]
+
+
 async def get_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) -> dict[str, Any] | None:
     column = _column(config.model, config.pk_field)
     stmt = select(config.model).where(column == pk)
@@ -311,6 +359,7 @@ async def get_by_pk(session: AsyncSession, config: AdminModelConfig, pk: int) ->
     await _enrich_currency_codes(session, [row])
     await _enrich_fk_labels(session, config, [row])
     await _enrich_transaction_labels(session, config, [row])
+    await _enrich_settlement_labels(session, config, [row])
     return row
 
 
@@ -361,6 +410,7 @@ async def list_options(
     search: str | None = None,
     ids: list[int] | None = None,
     limit: int = 50,
+    filters: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """`[{id, label}]` for pickers/filters, labelled by `config.str_template`.
 
@@ -372,6 +422,8 @@ async def list_options(
         raise ValueError(f"'{config.key}' has no label template and can't be used as an option source")
     pk_column = _column(config.model, config.pk_field)
     stmt = select(config.model)
+    for name, raw in (filters or {}).items():
+        stmt = _apply_one_filter(stmt, config, name, raw)
     if ids:
         stmt = stmt.where(pk_column.in_(ids))
     else:

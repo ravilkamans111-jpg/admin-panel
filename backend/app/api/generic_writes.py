@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_tenant_write_session, require_role
 from app.core.exceptions import RecordNotFoundError
+from app.core.rbac import role_at_least
 from app.core.roles import BrandRole
 from app.registry.admin_models import get_config, mask_row
 from app.services import audit_service, generic_write_service
@@ -22,10 +23,14 @@ from app.services import audit_service, generic_write_service
 router = APIRouter(prefix="/admin", tags=["generic-writes"])
 
 
-def _config_or_404(model_key: str):
+def _config_or_404(model_key: str, current_user: CurrentUser | None = None):
     config = get_config(model_key)
     if config is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown admin model '{model_key}'")
+    if current_user is not None and not role_at_least(current_user.role, config.write_role):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, f"Changing '{model_key}' requires the '{config.write_role.value}' role"
+        )
     return config
 
 
@@ -37,7 +42,7 @@ async def create_record(
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
 ) -> dict:
-    config = _config_or_404(model_key)
+    config = _config_or_404(model_key, current_user)
     if not config.creatable:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"'{model_key}' does not support creation")
     try:
@@ -72,7 +77,7 @@ async def update_record(
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
 ) -> dict:
-    config = _config_or_404(model_key)
+    config = _config_or_404(model_key, current_user)
     if not config.is_writable:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"'{model_key}' is not editable")
     if not body:
@@ -111,7 +116,7 @@ async def delete_record(
     current_user: CurrentUser = Depends(require_role(BrandRole.OPERATOR)),
     tenant_session: AsyncSession = Depends(get_tenant_write_session),
 ) -> None:
-    config = _config_or_404(model_key)
+    config = _config_or_404(model_key, current_user)
     if not config.deletable:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"'{model_key}' is not deletable")
     try:

@@ -111,5 +111,45 @@ async def test_rejects_unknown_field(session: AsyncSession):
     block = await _seed_block(session)
     with pytest.raises(ValueError, match="[Nn]ot editable"):
         await antifraud_write_service.update_antifraud_block(
-            session, pk=block.id, values={"second_chance_counter": 99}
+            session, pk=block.id, values={"ban_date": "2020-01-01"}
         )
+
+
+async def _merchant(session: AsyncSession) -> Merchant:
+    user = DjangoAuthUser(
+        username="demo", email="d@example.com", is_active=True, is_staff=False,
+        is_superuser=False, date_joined=datetime.now(UTC).isoformat(),
+    )
+    session.add(user)
+    await session.flush()
+    merchant = Merchant(name="PROD", user_id=user.id)
+    session.add(merchant)
+    await session.flush()
+    return merchant
+
+
+async def test_create_follows_the_source_new_object_branch(session: AsyncSession):
+    merchant = await _merchant(session)
+    created = await antifraud_write_service.create_antifraud_block(
+        session, values={"merchant_id": merchant.id, "user_id": "777", "second_chance": True}
+    )
+    assert created["merchant_name"] == "demo: PROD"  # str(merchant) = "<username>: <name>"
+    assert created["ban_date"] is not None  # set on create
+    assert created["second_chance_counter"] == 0  # no increment without an old value
+    assert created["second_chance_date"] is None
+    assert created["permanent_ban"] is False
+
+
+async def test_create_rejects_duplicates_missing_merchant_and_unknown_fields(session: AsyncSession):
+    merchant = await _merchant(session)
+    values = {"merchant_id": merchant.id, "user_id": "777"}
+    await antifraud_write_service.create_antifraud_block(session, values=values)
+    with pytest.raises(ValueError, match="уже существует"):
+        await antifraud_write_service.create_antifraud_block(session, values=values)
+    await session.rollback()
+    with pytest.raises(ValueError, match="мерчанта"):
+        await antifraud_write_service.create_antifraud_block(session, values={"user_id": "1"})
+    with pytest.raises(ValueError, match="ID пользователя"):
+        await antifraud_write_service.create_antifraud_block(session, values={"merchant_id": 1})
+    with pytest.raises(ValueError, match="Not creatable"):
+        await antifraud_write_service.create_antifraud_block(session, values={**values, "ban_date": "x"})

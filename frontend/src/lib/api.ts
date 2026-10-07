@@ -187,7 +187,7 @@ export function fetchModelDetail(
  */
 export function updateTransaction(
   id: string | number,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<Record<string, unknown>> {
   return authedFetch<Record<string, unknown>>(`/admin/transactions/${id}`, {
     method: "PATCH",
@@ -237,7 +237,7 @@ export function createSettlement(
  * in place and re-runs the balance side effects — not a plain column update. */
 export function updateSettlement(
   id: string | number,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<SettlementWriteResponse> {
   return authedFetch<SettlementWriteResponse>(`/admin/settlements/${id}`, {
     method: "PATCH",
@@ -254,7 +254,7 @@ export function updateSettlement(
  */
 export function updatePaymentMethodCompany(
   id: string | number,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<Record<string, unknown>> {
   return authedFetch<Record<string, unknown>>(`/admin/payment-method-companies/${id}`, {
     method: "PATCH",
@@ -269,7 +269,7 @@ export function updatePaymentMethodCompany(
  */
 export function updateMerchantPaymentMethod(
   id: string | number,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<Record<string, unknown>> {
   return authedFetch<Record<string, unknown>>(`/admin/merchant-payment-methods/${id}`, {
     method: "PATCH",
@@ -418,7 +418,7 @@ export function clearAllPaymentMethodsCache(): Promise<{ status: string }> {
 
 export function createRecord(
   modelKey: string,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<Record<string, unknown>> {
   return authedFetch<Record<string, unknown>>(`/admin/${modelKey}`, {
     method: "POST",
@@ -429,7 +429,7 @@ export function createRecord(
 export function updateRecordGeneric(
   modelKey: string,
   id: string | number,
-  values: Record<string, string | null>
+  values: Record<string, string | boolean | null>
 ): Promise<Record<string, unknown>> {
   return authedFetch<Record<string, unknown>>(`/admin/${modelKey}/${id}`, {
     method: "PATCH",
@@ -535,9 +535,10 @@ export function fetchFilterDescriptors(key: string): Promise<FilterDescriptor[]>
  * and FK filters. `ids` resolves already-selected values back to labels. */
 export function fetchOptions(
   key: string,
-  params: { search?: string; ids?: Array<number | string>; limit?: number }
+  params: { search?: string; ids?: Array<number | string>; limit?: number; filters?: Record<string, string | number> }
 ): Promise<OptionItem[]> {
   const query = new URLSearchParams();
+  Object.entries(params.filters ?? {}).forEach(([k, v]) => query.set(k, String(v)));
   if (params.search) query.set("search", params.search);
   if (params.ids && params.ids.length) query.set("ids", params.ids.join(","));
   if (params.limit) query.set("limit", String(params.limit));
@@ -575,4 +576,14 @@ export async function downloadCsv(
   link.click();
   link.remove();
   URL.revokeObjectURL(url);
+}
+
+/** Django-admin-style "Add user" (username + password + confirmation). Field
+ * errors come back as `{ field: [messages] }` in `ApiError.message` (JSON). */
+export function createDjangoUser(values: {
+  username: string;
+  password1: string;
+  password2: string;
+}): Promise<{ id: number; username: string }> {
+  return authedFetch<{ id: number; username: string }>("/admin/users", { method: "POST", body: values });
 }
