@@ -1,0 +1,40 @@
+# Production stack: the API and the UI only. Everything stateful is external —
+# the three brand PostgreSQL databases, each brand's Redis / Celery broker and
+# HashiCorp Vault (all addresses and credentials come from Vault, see DEPLOY.md).
+#
+#   cp .env.production.example .env   # fill in the values
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# Put a TLS-terminating reverse proxy in front (the ports below listen on
+# 127.0.0.1 only) and restrict access to the panel to your office/VPN network.
+
+services:
+  backend:
+    build: ./backend
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        # Public address of the API as the browser sees it (inlined into the JS at build time).
+        NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:?set NEXT_PUBLIC_API_BASE_URL in .env}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "127.0.0.1:3000:3000"
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/.next/cache
+    security_opt:
+      - no-new-privileges:true

@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -101,7 +102,10 @@ async def login(*, username: str, password: str, ip_address: str | None) -> Logi
             async with get_tenant_sessionmaker(brand_id)() as session:
                 user = await users.get_user_by_username(session, username)
                 # Always one hash verification per brand, user or not (no timing oracle).
-                password_ok = verify_django_password(password, user.password_hash if user else DUMMY_DJANGO_HASH)
+                # PBKDF2 is ~0.2 s of pure CPU — off the event loop so a login never stalls other requests.
+                password_ok = await asyncio.to_thread(
+                    verify_django_password, password, user.password_hash if user else DUMMY_DJANGO_HASH
+                )
                 if user is not None and password_ok and user.can_use_admin:
                     brand_users[brand_id] = user.id
                     options.append(

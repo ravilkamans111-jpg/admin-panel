@@ -10,8 +10,12 @@ import type {
   SelectBrandResponse,
 } from "./types";
 
-export const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
+// Inlined at build time (see frontend/Dockerfile). No fallback on purpose: a build without the
+// API address must fail, not ship a UI that quietly talks to localhost.
+export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL as string;
+if (!API_BASE_URL) {
+  throw new Error("NEXT_PUBLIC_API_BASE_URL is not set");
+}
 
 export class ApiError extends Error {
   status: number;

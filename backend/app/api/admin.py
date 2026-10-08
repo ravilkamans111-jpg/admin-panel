@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import CurrentUser, get_current_user, get_tenant_session
 from app.core.exceptions import InvalidFilterError, RecordNotFoundError
+from app.core.ttl_cache import TTLCache
 from app.services import admin_service
 from app.services.admin_service import DEFAULT_PAGE_SIZE
 
@@ -27,6 +28,10 @@ async def get_schema(current_user: CurrentUser = Depends(get_current_user)) -> l
 
 
 _RESERVED_QUERY_PARAMS = {"page", "page_size", "search", "ordering"}
+
+# `SELECT DISTINCT` over big tables for the choice lists runs on every list page open;
+# the set of statuses/directions barely changes, so keep it for five minutes.
+_filter_options_cache = TTLCache(ttl_seconds=300)
 
 
 def _filters_from(request: Request) -> dict[str, str]:
@@ -44,7 +49,10 @@ async def filter_options(
 ) -> list[dict]:
     """Descriptors the list page renders its filter controls from."""
     try:
-        return await admin_service.get_filter_descriptors(session, model_key=model_key)
+        return await _filter_options_cache.get_or_compute(
+            (current_user.brand_id, model_key),
+            lambda: admin_service.get_filter_descriptors(session, model_key=model_key),
+        )
     except RecordNotFoundError as exc:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
 

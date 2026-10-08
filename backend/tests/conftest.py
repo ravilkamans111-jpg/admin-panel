@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 os.environ.setdefault("USE_LOCAL_ENV_SECRETS", "true")
+os.environ.setdefault("CORS_ALLOW_ORIGINS", "http://testserver")
 os.environ.setdefault("JWT_SECRET_KEY", "test-secret-key")
 
 import pytest_asyncio

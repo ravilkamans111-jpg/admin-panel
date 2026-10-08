@@ -9,9 +9,10 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-# NEXT_PUBLIC_* vars are inlined at build time; docker-compose also passes
-# it at runtime, but bake in a sane default so `docker build` alone works.
-ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+# NEXT_PUBLIC_* vars are inlined into the JS bundle at build time, so the public
+# API URL must be supplied when the image is built (--build-arg).
+ARG NEXT_PUBLIC_API_BASE_URL
+RUN test -n "$NEXT_PUBLIC_API_BASE_URL" || (echo "build-arg NEXT_PUBLIC_API_BASE_URL is required" && exit 1)
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
 RUN npm run build
 

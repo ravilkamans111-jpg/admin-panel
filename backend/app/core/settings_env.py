@@ -32,7 +32,9 @@ class EnvSettings(BaseSettings):
     login_max_failed_attempts: int = 5
     login_lockout_minutes: int = 15
 
-    cors_allow_origins: str = "http://localhost:3000"
+    # Comma-separated browser origins allowed to call the API (the frontend's public URL). No default:
+    # a missing value must stop startup rather than silently allow a development origin.
+    cors_allow_origins: str
 
 
 env_settings = EnvSettings()
